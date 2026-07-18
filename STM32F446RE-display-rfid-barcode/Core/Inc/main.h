@@ -73,6 +73,10 @@ void Error_Handler(void);
 #define SPI2_CS_GPIO_Port GPIOB
 #define SPI2_IRQ_Pin GPIO_PIN_6
 #define SPI2_IRQ_GPIO_Port GPIOC
+#define USB_POWER_Pin GPIO_PIN_7
+#define USB_POWER_GPIO_Port GPIOC
+#define SDIO_DET_Pin GPIO_PIN_8
+#define SDIO_DET_GPIO_Port GPIOA
 #define SPI3_CS_Pin GPIO_PIN_6
 #define SPI3_CS_GPIO_Port GPIOB
 #define SPI3_RST_Pin GPIO_PIN_7
