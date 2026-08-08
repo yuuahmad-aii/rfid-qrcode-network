@@ -46,4 +46,7 @@ void ILI9488_WriteString(uint16_t x, uint16_t y, const char* str, FontDef font, 
 void ILI9488_WriteCharScaled(uint16_t x, uint16_t y, char ch, FontDef font, uint16_t color, uint16_t bgcolor, uint8_t scale);
 void ILI9488_WriteStringScaled(uint16_t x, uint16_t y, const char* str, FontDef font, uint16_t color, uint16_t bgcolor, uint8_t scale);
 
+// LVGL specific functions
+void ILI9488_DrawBitmapLVGL(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, const uint8_t *data);
+
 #endif /* __ILI9488_H */

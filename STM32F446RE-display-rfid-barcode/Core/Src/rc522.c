@@ -12,12 +12,17 @@ SPI_HandleTypeDef *rc522_spi;
 #define RC522_RST_HIGH()                                                       \
   HAL_GPIO_WritePin(SPI3_RST_GPIO_Port, SPI3_RST_Pin, GPIO_PIN_SET)
 
+#include "usb_host.h"
+
 void RC522_WriteRegister(uint8_t addr, uint8_t val) {
   uint8_t txData[2];
   txData[0] = (addr << 1) & 0x7E;
   txData[1] = val;
   RC522_CS_LOW();
-  HAL_SPI_Transmit(rc522_spi, txData, 2, HAL_MAX_DELAY);
+  HAL_SPI_Transmit_DMA(rc522_spi, txData, 2);
+  while (HAL_SPI_GetState(rc522_spi) != HAL_SPI_STATE_READY) {
+      MX_USB_HOST_Process();
+  }
   RC522_CS_HIGH();
 }
 
@@ -27,7 +32,10 @@ uint8_t RC522_ReadRegister(uint8_t addr) {
   txData[0] = ((addr << 1) & 0x7E) | 0x80;
   txData[1] = 0x00;
   RC522_CS_LOW();
-  HAL_SPI_TransmitReceive(rc522_spi, txData, rxData, 2, HAL_MAX_DELAY);
+  HAL_SPI_TransmitReceive_DMA(rc522_spi, txData, rxData, 2);
+  while (HAL_SPI_GetState(rc522_spi) != HAL_SPI_STATE_READY) {
+      MX_USB_HOST_Process();
+  }
   RC522_CS_HIGH();
   return rxData[1];
 }
@@ -138,6 +146,7 @@ uint8_t RC522_ToCard(uint8_t command, uint8_t *sendData, uint8_t sendLen,
   do {
     n = RC522_ReadRegister(CommIrqReg);
     i--;
+    MX_USB_HOST_Process();
   } while ((i != 0) && !(n & 0x01) && !(n & waitIRq));
 
   RC522_ClearBitMask(BitFramingReg, 0x80);

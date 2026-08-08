@@ -25,10 +25,15 @@
 /* USER CODE BEGIN Includes */
 #include "ili9488.h"
 #include "rc522.h"
+#include "usbh_hid.h"
+#include "usbh_hid_keybd.h"
 #include "xpt2046.h"
+#include "lvgl.h"
+#include "eez/ui.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+
 
 /* USER CODE END Includes */
 
@@ -53,6 +58,7 @@ ADC_HandleTypeDef hadc1;
 RTC_HandleTypeDef hrtc;
 
 SD_HandleTypeDef hsd;
+DMA_HandleTypeDef hdma_sdio;
 
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
@@ -65,8 +71,11 @@ DMA_HandleTypeDef hdma_spi3_rx;
 DMA_HandleTypeDef hdma_spi3_tx;
 
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim14;
 
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 typedef enum {
@@ -76,7 +85,11 @@ typedef enum {
   STATE_GRANTED,
   STATE_DENIED,
   STATE_MENU_PASS,
-  STATE_MENU_ADD
+  STATE_MENU_ADMIN,
+  STATE_MENU_ADD,
+  STATE_SYNC_TIME,
+  STATE_SYNC_RESULT,
+  STATE_BARCODE_READ
 } AppState;
 
 AppState currentState = STATE_BOOTING;
@@ -88,6 +101,19 @@ bool card_tapped = false;
 
 // Dummy credentials for testing
 const uint8_t known_uid[4] = {0x12, 0x34, 0x56, 0x78};
+
+extern USBH_HandleTypeDef hUsbHostFS;
+char barcode_buffer[64];
+char barcode_display_buffer[64];
+uint8_t barcode_idx = 0;
+volatile bool barcode_ready = false;
+volatile bool time_sync_success = false;
+volatile bool time_sync_error = false;
+char time_error_msg[32] = {0};
+
+volatile bool api_status_granted = false;
+volatile bool api_status_denied = false;
+char api_result_msg[64] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -102,6 +128,7 @@ static void MX_ADC1_Init(void);
 static void MX_RTC_Init(void);
 static void MX_SDIO_SD_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM14_Init(void);
 void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
@@ -109,10 +136,72 @@ void UI_DrawHeader(void);
 void UI_DrawFooter(void);
 void UI_DrawStandby(void);
 void UI_DrawKeypad(void);
+void UI_UpdateClock(void);
+void UI_DrawMenuAdmin(void);
+
+// LVGL Callbacks
+static void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map);
+static void my_touchpad_read(lv_indev_t * indev, lv_indev_data_t * data);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t rx_uart_byte;
+char rx_uart_buf[128];
+uint8_t rx_uart_idx = 0;
+uint32_t last_time_update = 0;
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART1) {
+    if (rx_uart_byte == '\n' || rx_uart_byte == '\r') {
+      rx_uart_buf[rx_uart_idx] = '\0';
+      if (rx_uart_idx > 0) {
+        if (strncmp(rx_uart_buf, "TIME:", 5) == 0) {
+          int year, month, day, hour, min, sec;
+          if (sscanf(rx_uart_buf + 5, "%d-%d-%d %d:%d:%d", &year, &month, &day,
+                     &hour, &min, &sec) == 6) {
+            RTC_TimeTypeDef sTime = {0};
+            RTC_DateTypeDef sDate = {0};
+
+            sTime.Hours = hour;
+            sTime.Minutes = min;
+            sTime.Seconds = sec;
+            sTime.TimeFormat = RTC_HOURFORMAT_24;
+            sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+            sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+            HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+
+            sDate.Year = year - 2000;
+            sDate.Month = month;
+            sDate.Date = day;
+            sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+            HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+            time_sync_success = true;
+          }
+        } else if (strncmp(rx_uart_buf, "TIME_ERR:", 9) == 0) {
+          strncpy(time_error_msg, rx_uart_buf + 9, sizeof(time_error_msg) - 1);
+          time_error_msg[sizeof(time_error_msg) - 1] = '\0';
+          time_sync_error = true;
+        } else if (strncmp(rx_uart_buf, "GRANTED:", 8) == 0) {
+          strncpy(api_result_msg, rx_uart_buf + 8, sizeof(api_result_msg) - 1);
+          api_result_msg[sizeof(api_result_msg) - 1] = '\0';
+          api_status_granted = true;
+        } else if (strncmp(rx_uart_buf, "DENIED:", 7) == 0) {
+          strncpy(api_result_msg, rx_uart_buf + 7, sizeof(api_result_msg) - 1);
+          api_result_msg[sizeof(api_result_msg) - 1] = '\0';
+          api_status_denied = true;
+        }
+      }
+      rx_uart_idx = 0;
+    } else {
+      if (rx_uart_idx < sizeof(rx_uart_buf) - 1) {
+        rx_uart_buf[rx_uart_idx++] = rx_uart_byte;
+      }
+    }
+    HAL_UART_Receive_IT(&huart1, &rx_uart_byte, 1);
+  }
+}
+
 void UI_DrawHeader(void) {
   ILI9488_FillRectangle(0, 0, 480, 40, ILI9488_NAVY);
   ILI9488_WriteStringScaled(10, 10, "ACCESS SYSTEM", Font_7x10, ILI9488_WHITE,
@@ -123,13 +212,30 @@ void UI_DrawHeader(void) {
 
 void UI_DrawFooter(void) {
   ILI9488_FillRectangle(0, 320 - 40, 480, 40, ILI9488_DARKGREY);
-  ILI9488_WriteStringScaled(10, 320 - 30, "ID: DEV-001  |  API: OK", Font_7x10,
-                            ILI9488_WHITE, ILI9488_DARKGREY, 2);
+
+  // Call update clock to draw the dynamic text
+  UI_UpdateClock();
 
   // Admin button
   ILI9488_FillRectangle(380, 320 - 35, 90, 30, ILI9488_BLUE);
   ILI9488_WriteStringScaled(395, 320 - 28, "ADMIN", Font_7x10, ILI9488_WHITE,
                             ILI9488_BLUE, 2);
+}
+
+void UI_UpdateClock(void) {
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef sDate = {0};
+  HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+  HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+  char time_str[64];
+  snprintf(time_str, sizeof(time_str), "DEV-001 | %02d:%02d:%02d", sTime.Hours,
+           sTime.Minutes, sTime.Seconds);
+
+  // Clear specifically the text area
+  ILI9488_FillRectangle(10, 320 - 30, 250, 20, ILI9488_DARKGREY);
+  ILI9488_WriteStringScaled(10, 320 - 30, time_str, Font_7x10, ILI9488_WHITE,
+                            ILI9488_DARKGREY, 2);
 }
 
 void UI_DrawStandby(void) {
@@ -179,6 +285,28 @@ void UI_DrawKeypad(void) {
     }
   }
 }
+
+void UI_DrawMenuAdmin(void) {
+  ILI9488_FillScreen(ILI9488_BLACK);
+  UI_DrawHeader();
+  ILI9488_WriteStringScaled(160, 60, "MENU ADMIN", Font_7x10, ILI9488_YELLOW,
+                            ILI9488_BLACK, 3);
+
+  // Btn Tambah Kartu
+  ILI9488_FillRectangle(80, 120, 320, 50, ILI9488_BLUE);
+  ILI9488_WriteStringScaled(120, 135, "TAMBAH KARTU", Font_7x10, ILI9488_WHITE,
+                            ILI9488_BLUE, 3);
+
+  // Btn Sync Waktu
+  ILI9488_FillRectangle(80, 190, 320, 50, ILI9488_ORANGE);
+  ILI9488_WriteStringScaled(140, 205, "SYNC WAKTU", Font_7x10, ILI9488_WHITE,
+                            ILI9488_ORANGE, 3);
+
+  // Btn Kembali
+  ILI9488_FillRectangle(190, 260, 100, 40, ILI9488_RED);
+  ILI9488_WriteStringScaled(210, 270, "KEMBALI", Font_7x10, ILI9488_WHITE,
+                            ILI9488_RED, 2);
+}
 /* USER CODE END 0 */
 
 /**
@@ -221,7 +349,9 @@ int main(void)
   MX_USART1_UART_Init();
   MX_FATFS_Init();
   MX_USB_HOST_Init();
+  MX_TIM14_Init();
   /* USER CODE BEGIN 2 */
+  HAL_UART_Receive_IT(&huart1, &rx_uart_byte, 1);
   // Start the backlight PWM on TIM3 CH3
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 32767); // 50% brightness
@@ -231,7 +361,8 @@ int main(void)
   XPT2046_Init();
   RC522_Init(&hspi3);
 
-  // Booting Screen
+  // Booting Screen (Manual UI commented out for LVGL)
+  /*
   ILI9488_FillScreen(ILI9488_BLACK);
   ILI9488_WriteStringScaled(40, 140, "MEMULAI PERANGKAT...", Font_7x10,
                             ILI9488_WHITE, ILI9488_BLACK, 3);
@@ -242,247 +373,89 @@ int main(void)
   ILI9488_WriteStringScaled(40, 200, "RFID SIAP", Font_7x10, ILI9488_GREEN,
                             ILI9488_BLACK, 2);
   HAL_Delay(1000);
-
+  */
+  
   currentState = STATE_STANDBY;
-  UI_DrawStandby();
+  // UI_DrawStandby(); // Commented out for LVGL
 
-  uint16_t touch_x = 0, touch_y = 0;
-  uint8_t touched = 0;
+
+  // --- LVGL Setup ---
+  lv_init();
+
+  // 1. Display Setup
+  lv_display_t * disp = lv_display_create(ILI9488_WIDTH, ILI9488_HEIGHT);
+  lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB888);
+  lv_display_set_flush_cb(disp, my_disp_flush);
+  
+  // Create a draw buffer for LVGL (e.g., 1/10 screen size)
+  #define DRAW_BUF_SIZE (ILI9488_WIDTH * ILI9488_HEIGHT / 10 * 3)
+  static uint8_t buf1[DRAW_BUF_SIZE] __attribute__((aligned(64)));
+  lv_display_set_buffers(disp, buf1, NULL, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  // 2. Input Device Setup (Touch)
+  lv_indev_t * indev = lv_indev_create();
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(indev, my_touchpad_read);
+  
+  // Start TIM14 for LVGL tick
+  HAL_TIM_Base_Start_IT(&htim14);
+
+  // Initialize EEZ Studio UI
+  ui_init();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t last_tick = HAL_GetTick();
   while (1) {
-    // ini adalah aplikasi tally counter, dikomen agar bisa menjadi contoh
-    // dikemudian hari
-    // if (XPT2046_GetTouch(&touch_x, &touch_y)) {
-    //   if (!touched) {
-    //     touched = 1;
+    uint32_t current_tick = HAL_GetTick();
+    if (current_tick > last_tick) {
+        lv_tick_inc(current_tick - last_tick);
+    }
+    last_tick = current_tick;
+    lv_timer_handler();
 
-    //     // Check if Minus Button [-] is pressed
-    //     if (touch_x >= 20 && touch_x <= 120 && touch_y >= 110 &&
-    //         touch_y <= 210) {
-    //       if (counter > 0)
-    //         counter--;
-    //       sprintf(buf, "%04d", counter);
-    //       ILI9488_WriteStringScaled(180, 130, buf, Font_7x10, ILI9488_YELLOW,
-    //                                 ILI9488_BLACK, 5);
-    //     }
-
-    //     // Check if Plus Button [+] is pressed
-    //     if (touch_x >= 360 && touch_x <= 460 && touch_y >= 110 &&
-    //         touch_y <= 210) {
-    //       if (counter < 9999)
-    //         counter++;
-    //       sprintf(buf, "%04d", counter);
-    //       ILI9488_WriteStringScaled(180, 130, buf, Font_7x10, ILI9488_YELLOW,
-    //                                 ILI9488_BLACK, 5);
-    //     }
-
-    //     // Debounce delay to avoid multiple registrations on single touch
-    //     HAL_Delay(200);
-    //   }
-
-    //   // DEBUG: Draw the coordinates on the screen so we know what XPT2046 is
-    //   // reading
-    //   char dbg_buf[32];
-    //   sprintf(dbg_buf, "X:%04d Y:%04d", touch_x, touch_y);
-    //   ILI9488_WriteStringScaled(120, 220, dbg_buf, Font_7x10, ILI9488_WHITE,
-    //                             ILI9488_BLACK, 2);
-
-    // } else {
-    //   touched = 0;
-    // }
     /* USER CODE END WHILE */
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
-    if (currentState == STATE_STANDBY) {
+    ui_tick();
+    
+    // --- Background Scanner Checks ---
+    if (barcode_ready) {
+      barcode_ready = false;
+      static char barcode_uart_buf[90];
+      snprintf(barcode_uart_buf, sizeof(barcode_uart_buf), "BARCODE:%s\n", barcode_display_buffer);
+      HAL_UART_Transmit_DMA(&huart1, (uint8_t *)barcode_uart_buf, strlen(barcode_uart_buf));
+    }
+
+    static uint32_t last_rfid_scan = 0;
+    if (HAL_GetTick() - last_rfid_scan > 1000) {
       if (RC522_Check(rfid_id) == MI_OK) {
-        currentState = STATE_READING;
-        ILI9488_FillScreen(ILI9488_BLACK);
-        UI_DrawHeader();
-        UI_DrawFooter();
-        ILI9488_WriteStringScaled(40, 100, "DATA BERHASIL DIBACA", Font_7x10,
-                                  ILI9488_GREEN, ILI9488_BLACK, 3);
-        char uid_str[32];
-        snprintf(uid_str, sizeof(uid_str), "ID: %02X%02X%02X%02X", rfid_id[0],
-                 rfid_id[1], rfid_id[2], rfid_id[3]);
-        ILI9488_WriteStringScaled(40, 140, uid_str, Font_7x10, ILI9488_WHITE,
-                                  ILI9488_BLACK, 2);
-        ILI9488_WriteStringScaled(40, 180, "Sedang memproses...", Font_7x10,
-                                  ILI9488_YELLOW, ILI9488_BLACK, 2);
-        stateEnterTime = HAL_GetTick();
-
-        char uart_buf[32];
-        snprintf(uart_buf, sizeof(uart_buf), "RFID:%02X%02X%02X%02X\n", rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
-        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+        last_rfid_scan = HAL_GetTick();
+        static char rfid_uart_buf[32];
+        snprintf(rfid_uart_buf, sizeof(rfid_uart_buf),
+                 "RFID:%02X%02X%02X%02X\n", rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rfid_uart_buf, strlen(rfid_uart_buf));
       }
+    }
 
-      if (XPT2046_GetTouch(&touch_x, &touch_y)) {
-        if (!touched) {
-          touched = 1;
-          if (touch_x >= 380 && touch_x <= 470 && touch_y >= (320 - 35) &&
-              touch_y <= (320 - 5)) {
-            currentState = STATE_MENU_PASS;
-            memset(input_password, 0, sizeof(input_password));
-            UI_DrawKeypad();
-          }
-          HAL_Delay(200);
-        }
-      } else {
-        touched = 0;
-      }
-    } else if (currentState == STATE_READING) {
-      if (HAL_GetTick() - stateEnterTime > 1000) {
-        if (rfid_id[0] == known_uid[0] && rfid_id[1] == known_uid[1]) {
-          currentState = STATE_GRANTED;
-          ILI9488_FillScreen(ILI9488_BLACK);
-          ILI9488_WriteStringScaled(40, 100, "V AKSES DITERIMA", Font_7x10,
-                                    ILI9488_GREEN, ILI9488_BLACK, 3);
-          ILI9488_WriteStringScaled(40, 140, "Selamat datang", Font_7x10,
-                                    ILI9488_WHITE, ILI9488_BLACK, 2);
-          ILI9488_WriteStringScaled(40, 180, "BUDI SANTOSO", Font_7x10,
-                                    ILI9488_YELLOW, ILI9488_BLACK, 3);
-
-          HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-          HAL_Delay(200);
-          HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
-        } else {
-          currentState = STATE_DENIED;
-          ILI9488_FillScreen(ILI9488_BLACK);
-          ILI9488_WriteStringScaled(40, 100, "X AKSES DITOLAK", Font_7x10,
-                                    ILI9488_RED, ILI9488_BLACK, 3);
-          ILI9488_WriteStringScaled(40, 140, "Kartu tidak terdaftar", Font_7x10,
-                                    ILI9488_WHITE, ILI9488_BLACK, 2);
-          ILI9488_WriteStringScaled(40, 180, "Silakan hubungi petugas",
-                                    Font_7x10, ILI9488_YELLOW, ILI9488_BLACK,
-                                    2);
-
-          for (int i = 0; i < 2; i++) {
-            HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-            HAL_Delay(100);
-            HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
-            HAL_Delay(100);
-          }
-        }
-        stateEnterTime = HAL_GetTick();
-      }
-    } else if (currentState == STATE_GRANTED || currentState == STATE_DENIED) {
-      if (HAL_GetTick() - stateEnterTime > 3000) {
-        currentState = STATE_STANDBY;
-        UI_DrawStandby();
-      }
-    } else if (currentState == STATE_MENU_PASS) {
-      if (XPT2046_GetTouch(&touch_x, &touch_y)) {
-        if (!touched) {
-          touched = 1;
-
-          int start_x = 135, start_y = 105, btn_w = 60, btn_h = 40, spc = 10;
-          char labels[12] = {'1', '2', '3', '4', '5', '6',
-                             '7', '8', '9', 'C', '0', 'O'};
-          int btn_idx = -1;
-
-          for (int i = 0; i < 12; i++) {
-            int row = i / 3;
-            int col = i % 3;
-            int x = start_x + col * (btn_w + spc);
-            int y = start_y + row * (btn_h + spc);
-
-            if (touch_x >= x && touch_x <= x + btn_w && touch_y >= y &&
-                touch_y <= y + btn_h) {
-              btn_idx = i;
-              break;
-            }
-          }
-
-          if (btn_idx != -1) {
-            int len = strlen(input_password);
-            if (btn_idx == 9) { // DEL
-              if (len > 0)
-                input_password[len - 1] = '\0';
-            } else if (btn_idx == 11) { // OK
-              if (strcmp(input_password, correct_password) == 0) {
-                currentState = STATE_MENU_ADD;
-                card_tapped = false;
-                ILI9488_FillScreen(ILI9488_BLACK);
-                UI_DrawHeader();
-                ILI9488_WriteStringScaled(40, 100, "TAMBAH KARTU BARU",
-                                          Font_7x10, ILI9488_GREEN,
-                                          ILI9488_BLACK, 3);
-                ILI9488_WriteStringScaled(40, 160, "DEKATKAN KARTU", Font_7x10,
-                                          ILI9488_WHITE, ILI9488_BLACK, 2);
-                ILI9488_FillRectangle(60, 240, 100, 40, ILI9488_RED);
-                ILI9488_WriteStringScaled(80, 250, "BATAL", Font_7x10,
-                                          ILI9488_WHITE, ILI9488_RED, 2);
-              } else {
-                currentState = STATE_STANDBY;
-                UI_DrawStandby();
-              }
-            } else {
-              if (len < 9) {
-                input_password[len] = labels[btn_idx];
-                input_password[len + 1] = '\0';
-              }
-            }
-
-            if (currentState == STATE_MENU_PASS) {
-              ILI9488_FillRectangle(135, 65, 200, 30, ILI9488_DARKGREY);
-              char masked[10] = "";
-              for (int k = 0; k < strlen(input_password); k++)
-                masked[k] = '*';
-              ILI9488_WriteStringScaled(145, 70, masked, Font_7x10,
-                                        ILI9488_WHITE, ILI9488_DARKGREY, 2);
-            }
-          }
-          HAL_Delay(200);
-        }
-      } else {
-        touched = 0;
-      }
-    } else if (currentState == STATE_MENU_ADD) {
-      if (!card_tapped && RC522_Check(rfid_id) == MI_OK) {
-        card_tapped = true;
-        ILI9488_FillRectangle(0, 140, 480, 80, ILI9488_BLACK);
-        ILI9488_WriteStringScaled(40, 150, "KARTU TERBACA:", Font_7x10,
-                                  ILI9488_GREEN, ILI9488_BLACK, 2);
-
-        char uid_str[32];
-        snprintf(uid_str, sizeof(uid_str), "%02X%02X%02X%02X", rfid_id[0],
-                 rfid_id[1], rfid_id[2], rfid_id[3]);
-        ILI9488_WriteStringScaled(40, 180, uid_str, Font_7x10, ILI9488_YELLOW,
-                                  ILI9488_BLACK, 3);
-
-        ILI9488_FillRectangle(320, 240, 100, 40, ILI9488_GREEN);
-        ILI9488_WriteStringScaled(355, 250, "OK", Font_7x10, ILI9488_WHITE,
-                                  ILI9488_GREEN, 2);
-      }
-
-      if (XPT2046_GetTouch(&touch_x, &touch_y)) {
-        if (!touched) {
-          touched = 1;
-          if (touch_x >= 60 && touch_x <= 160 && touch_y >= 240 &&
-              touch_y <= 280) {
-            card_tapped = false;
-            currentState = STATE_STANDBY;
-            UI_DrawStandby();
-          }
-          if (card_tapped && touch_x >= 320 && touch_x <= 420 &&
-              touch_y >= 240 && touch_y <= 280) {
-            ILI9488_FillRectangle(0, 140, 480, 80, ILI9488_BLACK);
-            ILI9488_WriteStringScaled(40, 160, "BERHASIL DITAMBAHKAN",
-                                      Font_7x10, ILI9488_WHITE, ILI9488_BLACK,
-                                      2);
-            HAL_Delay(1500);
-            card_tapped = false;
-            currentState = STATE_STANDBY;
-            UI_DrawStandby();
-          }
-          HAL_Delay(200);
-        }
-      } else {
-        touched = 0;
+    // --- Process API Responses ---
+    if (api_status_granted) {
+      api_status_granted = false;
+      HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+      HAL_Delay(200);
+      HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
+    }
+    
+    if (api_status_denied) {
+      api_status_denied = false;
+      for (int i = 0; i < 2; i++) {
+        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+        HAL_Delay(100);
+        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
+        HAL_Delay(100);
       }
     }
   }
@@ -844,6 +817,37 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM14 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM14_Init(void)
+{
+
+  /* USER CODE BEGIN TIM14_Init 0 */
+
+  /* USER CODE END TIM14_Init 0 */
+
+  /* USER CODE BEGIN TIM14_Init 1 */
+
+  /* USER CODE END TIM14_Init 1 */
+  htim14.Instance = TIM14;
+  htim14.Init.Prescaler = 0;
+  htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim14.Init.Period = 65535;
+  htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim14.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim14) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM14_Init 2 */
+
+  /* USER CODE END TIM14_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -902,9 +906,18 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
   /* DMA2_Stream3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
+  /* DMA2_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
+  /* DMA2_Stream7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
 
 }
 
@@ -995,7 +1008,58 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
+  if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD) {
+    HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
+    if (k_pinfo != NULL) {
+      char c = USBH_HID_GetASCIICode(k_pinfo);
+      if (c != 0) {
+        if (c == '\n' || c == '\r') {
+          if (barcode_idx > 0) {
+            barcode_buffer[barcode_idx] = '\0';
+            strncpy(barcode_display_buffer, barcode_buffer,
+                    sizeof(barcode_display_buffer) - 1);
+            barcode_display_buffer[sizeof(barcode_display_buffer) - 1] = '\0';
+            barcode_ready = true;
+            barcode_idx = 0;
+          }
+        } else {
+          if (barcode_idx < sizeof(barcode_buffer) - 1) {
+            barcode_buffer[barcode_idx++] = c;
+          }
+        }
+      }
+    }
+  }
+}
 
+/* LVGL Display Flush Callback */
+static void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
+{
+    ILI9488_DrawBitmapLVGL(area->x1, area->y1, area->x2, area->y2, px_map);
+    lv_display_flush_ready(disp);
+}
+
+/* LVGL Touchpad Read Callback */
+static void my_touchpad_read(lv_indev_t * indev, lv_indev_data_t * data)
+{
+    uint16_t touch_x = 0, touch_y = 0;
+    if(XPT2046_GetTouch(&touch_x, &touch_y)) {
+        data->state = LV_INDEV_STATE_PRESSED;
+        data->point.x = touch_x;
+        data->point.y = touch_y;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+/* Timer callback for LVGL */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM14) {
+        // Unused now, tick is handled in main loop
+    }
+}
 /* USER CODE END 4 */
 
 /**

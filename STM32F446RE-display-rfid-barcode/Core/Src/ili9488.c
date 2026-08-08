@@ -17,7 +17,9 @@ static void ILI9488_TransmitDMA(uint8_t *data, uint16_t size) {
     spi_dma_complete = 0;
     HAL_SPI_Transmit_DMA(&hspi1, data, size);
     while (!spi_dma_complete) {
-        // Wait for DMA transfer to complete
+        // Process USB Host events to avoid dropping barcode scanner input
+        extern void MX_USB_HOST_Process(void);
+        MX_USB_HOST_Process();
     }
 }
 
@@ -300,4 +302,22 @@ void ILI9488_WriteStringScaled(uint16_t x, uint16_t y, const char* str, FontDef 
         x += font.width * scale;
         str++;
     }
+}
+
+void ILI9488_DrawBitmapLVGL(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, const uint8_t *data) {
+    uint32_t size = (x1 - x0 + 1) * (y1 - y0 + 1) * 3;
+    
+    ILI9488_SetAddressWindow(x0, y0, x1, y1);
+    ILI9488_DC_DATA();
+    ILI9488_CS_LOW();
+    
+    uint32_t offset = 0;
+    while (size > 0) {
+        uint16_t chunk = (size > 65535) ? 65535 : size;
+        ILI9488_TransmitDMA((uint8_t*)(data + offset), chunk);
+        offset += chunk;
+        size -= chunk;
+    }
+    
+    ILI9488_CS_HIGH();
 }

@@ -1,3 +1,3 @@
 idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS "."
-                       REQUIRES esp_wifi esp_event nvs_flash esp_netif esp_http_client led_strip esp_driver_gpio esp_driver_uart)
+                       REQUIRES esp_wifi esp_event nvs_flash esp_netif esp_http_client led_strip esp_driver_gpio esp_driver_uart mbedtls esp-tls cjson)

@@ -1,69 +1,86 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- |
+# ESP32-C6 Co-MCU untuk Sistem Kontrol Akses (Display, RFID, Barcode)
 
-# Blink Example
+Proyek ini adalah *firmware* pendamping (Co-MCU) berbasis **ESP32-C6** yang bertindak sebagai antarmuka jaringan (Wi-Fi) dan pemrosesan API untuk mikrokontroler utama (seperti STM32). ESP32 menerima data pemindaian via UART, mengirimkannya ke server melalui protokol HTTP/HTTPS (REST API), dan mengembalikan hasil validasi ke mikrokontroler utama.
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Fitur Utama
 
-This example demonstrates how to blink a LED by using the GPIO driver or using the [led_strip](https://components.espressif.com/component/espressif/led_strip) library if the LED is addressable e.g. [WS2812](https://cdn-shop.adafruit.com/datasheets/WS2812B.pdf). The `led_strip` library is installed via [component manager](main/idf_component.yml).
+- **Konektivitas Wi-Fi:** Terhubung ke jaringan nirkabel secara otomatis dengan fitur *auto-reconnect*.
+- **Komunikasi UART:** Berkomunikasi dengan mikrokontroler utama (STM32) untuk menerima data pemindaian dan mengirimkan respon akses.
+- **REST API Client (HTTPS):** Mengirim data absensi/transaksi (`transaction_uid`, `timestamp`, `identifier`, `identifier_type`) ke server dalam format JSON.
+- **Validasi Sertifikat SSL/TLS:** Dilengkapi dengan *Root CA* Cloudflare tertanam untuk komunikasi HTTPS yang aman ke server (contoh: `device.dsalute.id`).
+- **Sinkronisasi Waktu (SNTP & API):** Mengambil waktu dari `pool.ntp.org` dan dari endpoint API khusus untuk memastikan stempel waktu (timestamp) akurat dan menyinkronkan jam RTC di STM32.
+- **Indikator LED RGB (WS2812):** Menggunakan LED terintegrasi untuk memberikan *feedback* visual mengenai status sistem (Wi-Fi, Transmisi, Sukses, Gagal).
+- **Tombol Test (BOOT):** Dapat digunakan untuk mengirim *request* API pengujian secara manual (berguna untuk *debugging*).
 
-## How to Use Example
+## Perangkat Keras (Hardware) & Pinout
 
-Before project configuration and build, be sure to set the correct chip target using `idf.py set-target <chip_name>`.
+Kode ini disesuaikan untuk *board* ESP32-C6 (seperti ESP32-C6-DevKitC) dengan pinout berikut:
 
-### Hardware Required
+- **UART (Komunikasi ke STM32):**
+  - Baud Rate: `115200`
+  - `TXD`: GPIO 4
+  - `RXD`: GPIO 5
+- **Tombol BOOT:** GPIO 9 (Tekan untuk mengirim *test request*).
+- **LED RGB (WS2812 - via SPI2 DMA):** GPIO 8.
 
-* A development board with normal LED or addressable LED on-board (e.g., ESP32-S3-DevKitC, ESP32-C6-DevKitC etc.)
-* A USB cable for Power supply and programming
+### Status Indikator LED RGB
+- 🔴 **Merah:** Tidak terhubung ke Wi-Fi atau Terjadi Kesalahan (HTTP Error / Ditolak Server).
+- 🔵 **Biru:** Terhubung ke Wi-Fi dan *Idle* (Siap beroperasi).
+- 🟡 **Kuning:** Sedang mengirim *request* HTTP ke server.
+- 🟢 **Hijau:** *Request* berhasil (Akses Diterima).
 
-See [Development Boards](https://www.espressif.com/en/products/devkits) for more information about it.
+## Cara Kerja Sistem & Protokol UART
 
-### Configure the Project
+ESP32 mendengarkan input dari port UART. Ketika mikrokontroler utama (STM32) memindai kartu atau barcode, ia mengirim pesan ke ESP32.
 
-Open the project configuration menu (`idf.py menuconfig`).
+### Pesan dari STM32 ke ESP32
+1. **`RFID:<UID>\n`**
+   - Memicu ESP32 untuk mengirim HTTP POST ke API dengan `identifier_type: "rfid"` dan nilai `<UID>`.
+2. **`BARCODE:<DATA>\n`**
+   - Memicu ESP32 untuk mengirim HTTP POST ke API dengan `identifier_type: "qr"` dan nilai `<DATA>`.
+3. **`CMD:SYNC_TIME\n`**
+   - Meminta ESP32 untuk memanggil endpoint sinkronisasi waktu dan mengembalikan waktunya ke STM32.
 
-In the `Example Configuration` menu:
+### Pesan dari ESP32 ke STM32
+1. **`GRANTED:<Nama>\n`**
+   - Dikirim ketika API mengembalikan `success: true`. `<Nama>` diambil dari parameter `attendance_result.name`.
+2. **`DENIED:<Alasan>\n`**
+   - Dikirim ketika API mengembalikan `success: false` atau koneksi gagal.
+3. **`TIME:YY-MM-DD HH:MM:SS\n`**
+   - Dikirim setelah berhasil mengambil waktu server.
+4. **`TIME_ERR:<Alasan>\n`**
+   - Dikirim jika sinkronisasi waktu gagal.
 
-* Select the LED type in the `Blink LED type` option.
-  * Use `GPIO` for regular LED
-  * Use `LED strip` for addressable LED
-* If the LED type is `LED strip`, select the backend peripheral
-  * `RMT` is only available for ESP targets with RMT peripheral supported
-  * `SPI` is available for all ESP targets
-* Set the GPIO number used for the signal in the `Blink GPIO number` option.
-* Set the blinking period in the `Blink period in ms` option.
+## Konfigurasi (Wajib Diubah!)
 
-### Build and Flash
+Sebelum melakukan *flash* ke ESP32-C6, Anda **WAJIB** mengubah konfigurasi kredensial Wi-Fi dan URL API di bagian atas file `main.c`:
 
-Run `idf.py -p PORT flash monitor` to build, flash and monitor the project.
-
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for full steps to configure and use ESP-IDF to build projects.
-
-## Example Output
-
-As you run the example, you will see the LED blinking, according to the previously defined period. For the addressable LED, you can also change the LED color by setting the `led_strip_set_pixel(led_strip, 0, 16, 16, 16);` (LED Strip, Pixel Number, Red, Green, Blue) with values from 0 to 255 in the [source file](main/blink_example_main.c).
-
-```text
-I (315) example: Example configured to blink addressable LED!
-I (325) example: Turning the LED OFF!
-I (1325) example: Turning the LED ON!
-I (2325) example: Turning the LED OFF!
-I (3325) example: Turning the LED ON!
-I (4325) example: Turning the LED OFF!
-I (5325) example: Turning the LED ON!
-I (6325) example: Turning the LED OFF!
-I (7325) example: Turning the LED ON!
-I (8325) example: Turning the LED OFF!
+```c
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASS "YOUR_WIFI_PASSWORD"
+#define API_TEST_URL "http://192.168.137.1:3000/api/test"
+#define API_TIME_URL "https://device.dsalute.id/api/v1/time.php"
+#define API_TRANSACTIONS_URL "https://device.dsalute.id/api/v1/transactions.php"
+#define API_KEY "dev_8dfa3625a4593e78de6c02e7b03b1daf7f3b13ba9cae2d81"
 ```
 
-Note: The color order could be different according to the LED model.
+Jika server Anda menggunakan sertifikat SSL dari CA yang berbeda (bukan Cloudflare), Anda juga harus memperbarui variabel `cloudflare_ca_pem`.
 
-The pixel number indicates the pixel position in the LED strip. For a single LED, use 0.
+## Kompilasi & Flash (ESP-IDF)
 
-## Troubleshooting
+Proyek ini dibangun menggunakan **ESP-IDF** (Espressif IoT Development Framework).
 
-* If the LED isn't blinking, check the GPIO or the LED type selection in the `Example Configuration` menu.
+1. Buka terminal ESP-IDF.
+2. Atur target ke ESP32-C6:
+   ```bash
+   idf.py set-target esp32c6
+   ```
+3. Bangun (*build*), *flash*, dan pantau (*monitor*) kode:
+   ```bash
+   idf.py build flash monitor
+   ```
 
-For any technical queries, please open an [issue](https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you soon.
+## Dependencies / Komponen
+- `esp_wifi`, `esp_http_client`, `esp_netif_sntp`
+- `cJSON` (Untuk pembuatan dan penguraian payload JSON).
+- `led_strip` (Untuk mengontrol LED WS2812).
