@@ -39,7 +39,61 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+#include "eez/screens.h"
 
+extern void loadScreen(enum ScreensEnum screenId);
+void revert_to_main_cb(lv_timer_t * t) {
+    loadScreen(SCREEN_ID_MAIN);
+}
+
+
+
+static lv_timer_t * admin_timer = NULL;
+static void go_admin_cb(lv_timer_t * t) {
+    if (objects.textarea_input_password != NULL) {
+        lv_textarea_set_text(objects.textarea_input_password, "");
+    }
+    loadScreen(SCREEN_ID_ADMIN_PASSWORD);
+}
+
+void action_btn_admin_on_pressed(lv_event_t * e) {
+    if (admin_timer == NULL) {
+        admin_timer = lv_timer_create(go_admin_cb, 50, NULL);
+        lv_timer_set_repeat_count(admin_timer, 1);
+    } else {
+        lv_timer_resume(admin_timer);
+        lv_timer_reset(admin_timer);
+    }
+}
+
+void action_button_matrix_password_pressed(lv_event_t * e) {
+    lv_obj_t * obj = lv_event_get_target(e);
+    uint32_t btn_id = lv_buttonmatrix_get_selected_button(obj);
+    if(btn_id == LV_BUTTONMATRIX_BUTTON_NONE) return;
+    
+    const char * txt = lv_buttonmatrix_get_button_text(obj, btn_id);
+    if (!txt) return;
+
+    if (strcmp(txt, "ok") == 0) {
+        if (objects.textarea_input_password != NULL) {
+            const char * pwd = lv_textarea_get_text(objects.textarea_input_password);
+            if (strcmp(pwd, "1234") == 0) {
+                loadScreen(SCREEN_ID_ADMIN_PANEL);
+            } else {
+                loadScreen(SCREEN_ID_MAIN);
+            }
+            lv_textarea_set_text(objects.textarea_input_password, "");
+        }
+    } else if (strcmp(txt, "del") == 0) {
+        if (objects.textarea_input_password != NULL) {
+            lv_textarea_delete_char(objects.textarea_input_password);
+        }
+    } else {
+        if (objects.textarea_input_password != NULL) {
+            lv_textarea_add_text(objects.textarea_input_password, txt);
+        }
+    }
+}
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -388,7 +442,7 @@ int main(void)
   lv_display_set_flush_cb(disp, my_disp_flush);
   
   // Create a draw buffer for LVGL (e.g., 1/10 screen size)
-  #define DRAW_BUF_SIZE (ILI9488_WIDTH * ILI9488_HEIGHT / 10 * 3)
+  #define DRAW_BUF_SIZE (ILI9488_WIDTH * ILI9488_HEIGHT / 10 * 1)
   static uint8_t buf1[DRAW_BUF_SIZE] __attribute__((aligned(64)));
   lv_display_set_buffers(disp, buf1, NULL, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
 
@@ -423,11 +477,19 @@ int main(void)
     ui_tick();
     
     // --- Background Scanner Checks ---
+    static lv_timer_t * revert_timer = NULL;
+
     if (barcode_ready) {
       barcode_ready = false;
       static char barcode_uart_buf[90];
       snprintf(barcode_uart_buf, sizeof(barcode_uart_buf), "BARCODE:%s\n", barcode_display_buffer);
       HAL_UART_Transmit_DMA(&huart1, (uint8_t *)barcode_uart_buf, strlen(barcode_uart_buf));
+      
+      // UI Update
+      loadScreen(SCREEN_ID_QR_READ);
+      if (objects.id_qrcode) {
+          lv_label_set_text(objects.id_qrcode, barcode_display_buffer);
+      }
     }
 
     static uint32_t last_rfid_scan = 0;
@@ -438,24 +500,42 @@ int main(void)
         snprintf(rfid_uart_buf, sizeof(rfid_uart_buf),
                  "RFID:%02X%02X%02X%02X\n", rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
         HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rfid_uart_buf, strlen(rfid_uart_buf));
+        
+        // UI Update
+        loadScreen(SCREEN_ID_RFID_READ);
+        if (objects.id_rfid) {
+            static char rfid_str_ui[32];
+            snprintf(rfid_str_ui, sizeof(rfid_str_ui), "%02X%02X%02X%02X", rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
+            lv_label_set_text(objects.id_rfid, rfid_str_ui);
+        }
       }
     }
 
     // --- Process API Responses ---
     if (api_status_granted) {
       api_status_granted = false;
-      HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-      HAL_Delay(200);
-      HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
+      loadScreen(SCREEN_ID_ACCESS_ACCEPTED);
+      if (revert_timer == NULL) {
+          revert_timer = lv_timer_create(revert_to_main_cb, 3000, NULL);
+          lv_timer_set_repeat_count(revert_timer, 1);
+      } else {
+          lv_timer_resume(revert_timer);
+          lv_timer_reset(revert_timer);
+      }
     }
     
     if (api_status_denied) {
       api_status_denied = false;
-      for (int i = 0; i < 2; i++) {
-        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-        HAL_Delay(100);
-        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
-        HAL_Delay(100);
+      loadScreen(SCREEN_ID_ACCESS_REJECTED);
+      if (objects.error_reason != NULL) {
+          lv_label_set_text(objects.error_reason, api_result_msg);
+      }
+      if (revert_timer == NULL) {
+          revert_timer = lv_timer_create(revert_to_main_cb, 3000, NULL);
+          lv_timer_set_repeat_count(revert_timer, 1);
+      } else {
+          lv_timer_resume(revert_timer);
+          lv_timer_reset(revert_timer);
       }
     }
   }

@@ -30,7 +30,14 @@ typedef struct _objects_t {
     lv_obj_t *access_rejected;
     lv_obj_t *access_accepted;
     lv_obj_t *tombol_admin;
+    lv_obj_t *button_matrix_password;
     lv_obj_t *textarea_input_password;
+    lv_obj_t *spinner_loading_1;
+    lv_obj_t *id_qrcode;
+    lv_obj_t *rfid_terdeteksi;
+    lv_obj_t *spinner_loading;
+    lv_obj_t *id_rfid;
+    lv_obj_t *error_reason;
 } objects_t;
 
 extern objects_t objects;
