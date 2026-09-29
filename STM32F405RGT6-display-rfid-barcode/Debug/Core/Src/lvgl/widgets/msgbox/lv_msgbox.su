@@ -1,0 +1,15 @@
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:307:13:msgbox_size_changed_event_cb	16	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:111:12:lv_msgbox_create	16	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:147:12:lv_msgbox_add_title	24	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:173:12:lv_msgbox_add_header_button	16	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:195:12:lv_msgbox_add_text	16	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:206:12:lv_msgbox_add_text_fmt	20	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:220:12:lv_msgbox_add_footer_button	16	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:249:12:lv_msgbox_add_close_button	8	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:256:12:lv_msgbox_get_header	0	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:263:12:lv_msgbox_get_footer	0	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:270:12:lv_msgbox_get_content	0	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:277:12:lv_msgbox_get_title	0	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:284:6:lv_msgbox_close	8	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:300:13:msgbox_close_click_event_cb	8	static
+../Core/Src/lvgl/widgets/msgbox/lv_msgbox.c:290:6:lv_msgbox_close_async	8	static

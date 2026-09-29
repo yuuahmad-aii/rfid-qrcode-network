@@ -1,0 +1,11 @@
+Core/Src/lvgl/draw/eve/lv_draw_eve_triangle.o: \
+ ../Core/Src/lvgl/draw/eve/lv_draw_eve_triangle.c \
+ ../Core/Src/lvgl/draw/eve/lv_draw_eve_private.h \
+ ../Core/Src/lvgl/draw/eve/lv_draw_eve.h \
+ ../Core/Src/lvgl/draw/eve/../../lv_conf_internal.h \
+ ../Core/Src/lvgl/draw/eve/../../lv_conf_kconfig.h ../Core/Inc/lv_conf.h
+../Core/Src/lvgl/draw/eve/lv_draw_eve_private.h:
+../Core/Src/lvgl/draw/eve/lv_draw_eve.h:
+../Core/Src/lvgl/draw/eve/../../lv_conf_internal.h:
+../Core/Src/lvgl/draw/eve/../../lv_conf_kconfig.h:
+../Core/Inc/lv_conf.h:

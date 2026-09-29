@@ -1,0 +1,11 @@
+../Core/Src/lvgl/draw/lv_draw_rect.c:41:28:lv_draw_rect_dsc_init	16	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:60:6:lv_draw_fill_dsc_init	8	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:67:22:lv_draw_task_get_fill_dsc	0	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:72:6:lv_draw_fill	120	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:95:6:lv_draw_border_dsc_init	8	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:103:24:lv_draw_task_get_border_dsc	0	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:108:6:lv_draw_border	88	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:131:6:lv_draw_box_shadow_dsc_init	8	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:138:28:lv_draw_task_get_box_shadow_dsc	0	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:143:6:lv_draw_box_shadow	16	static
+../Core/Src/lvgl/draw/lv_draw_rect.c:156:6:lv_draw_rect	264	static

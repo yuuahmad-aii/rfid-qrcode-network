@@ -1,0 +1,17 @@
+../Core/Src/lvgl/core/lv_obj_style_gen.h:1326:23:lv_obj_get_style_drop_shadow_offset_x	1
+../Core/Src/lvgl/core/lv_obj_style_gen.h:1338:23:lv_obj_get_style_drop_shadow_offset_y	1
+../Core/Src/lvgl/core/lv_obj_style_gen.h:1132:26:lv_obj_get_style_text_color_filtered	1
+../Core/Src/lvgl/core/lv_obj_draw.c:474:21:image_apply_layer_recolor.isra	6
+../Core/Src/lvgl/core/lv_obj_draw.c:455:19:normal_apply_layer_recolor.isra	3
+../Core/Src/lvgl/core/lv_obj_draw.c:439:24:get_layer_opa.isra	3
+../Core/Src/lvgl/core/lv_obj_draw.c:500:13:drop_shadow_init	2
+../Core/Src/lvgl/core/lv_obj_draw.c:49:6:lv_obj_init_draw_rect_dsc	23
+../Core/Src/lvgl/core/lv_obj_draw.c:171:6:lv_obj_init_draw_label_dsc	4
+../Core/Src/lvgl/core/lv_obj_draw.c:212:6:lv_obj_init_draw_image_dsc	5
+../Core/Src/lvgl/core/lv_obj_draw.c:254:6:lv_obj_init_draw_line_dsc	6
+../Core/Src/lvgl/core/lv_obj_draw.c:297:6:lv_obj_init_draw_arc_dsc	5
+../Core/Src/lvgl/core/lv_obj_draw.c:335:6:lv_obj_init_draw_blur_dsc	2
+../Core/Src/lvgl/core/lv_obj_draw.c:353:9:lv_obj_calculate_ext_draw_size	12
+../Core/Src/lvgl/core/lv_obj_draw.c:422:9:lv_obj_get_ext_draw_size	2
+../Core/Src/lvgl/core/lv_obj_draw.c:398:6:lv_obj_refresh_ext_draw_size	4
+../Core/Src/lvgl/core/lv_obj_draw.c:428:17:lv_obj_get_layer_type	2

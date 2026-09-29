@@ -1,0 +1,17 @@
+../Core/Src/ili9488.c:46:13:ILI9488_SendData	1
+../Core/Src/ili9488.c:41:13:ILI9488_SendCommand	1
+../Core/Src/ili9488.c:16:13:ILI9488_TransmitDMA	4
+../Core/Src/ili9488.c:10:6:HAL_SPI_TxCpltCallback	2
+../Core/Src/ili9488.c:64:6:ILI9488_Init	1
+../Core/Src/ili9488.c:161:6:ILI9488_SetAddressWindow	1
+../Core/Src/ili9488.c:187:6:ILI9488_FillRectangle.part.0	5
+../Core/Src/ili9488.c:181:6:ILI9488_DrawPixel	3
+../Core/Src/ili9488.c:187:6:ILI9488_FillRectangle	3
+../Core/Src/ili9488.c:219:6:ILI9488_FillScreen	1
+../Core/Src/ili9488.c:223:6:ILI9488_DrawRectangle	1
+../Core/Src/ili9488.c:230:6:ILI9488_DrawLine	11
+../Core/Src/ili9488.c:259:6:ILI9488_WriteChar	8
+../Core/Src/ili9488.c:298:6:ILI9488_WriteString	4
+../Core/Src/ili9488.c:311:6:ILI9488_WriteCharScaled	6
+../Core/Src/ili9488.c:328:6:ILI9488_WriteStringScaled	4
+../Core/Src/ili9488.c:341:6:ILI9488_DrawBitmapLVGL	2

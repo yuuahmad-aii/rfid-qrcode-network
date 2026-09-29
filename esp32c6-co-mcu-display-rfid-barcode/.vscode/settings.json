@@ -2,13 +2,12 @@
   "C_Cpp.intelliSenseEngine": "default",
   "idf.extensionActivationMode": "always",
   "idf.openOcdConfigs": [
-    "board/esp32c6-builtin.cfg"
+    "board/esp32c6-lpcore-builtin.cfg"
   ],
-  "idf.portWin": "COM7",
   "idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c6",
-    "OPENOCD_USB_ADAPTER_LOCATION": "2-5"
+    "OPENOCD_USB_ADAPTER_LOCATION": "2-4"
   },
   "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
@@ -16,5 +15,6 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\ahmad\\Documents\\Project-Yuuahmad\\rfid-qrcode-network\\esp32c6-co-mcu-display-rfid-barcode\\build"
   ],
-  "idf.flashType": "JTAG"
+  "idf.flashType": "JTAG",
+  "idf.port": "COM15"
 }

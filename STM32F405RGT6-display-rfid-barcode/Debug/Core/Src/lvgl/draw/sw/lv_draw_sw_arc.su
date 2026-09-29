@@ -1,0 +1,3 @@
+../Core/Src/lvgl/draw/sw/lv_draw_sw_arc.c:252:13:add_circle	40	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw_arc.c:272:13:get_rounded_area	32	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw_arc.c:53:6:lv_draw_sw_arc	592	static

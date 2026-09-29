@@ -1,0 +1,4 @@
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_a8.c:649:45:get_bit	0	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_a8.c:374:35:mask_only_image_blend	32	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_a8.c:177:28:lv_draw_sw_blend_color_to_a8	32	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_a8.c:252:28:lv_draw_sw_blend_image_to_a8	48	static

@@ -1,0 +1,6 @@
+../Core/Src/lvgl/draw/sw/lv_draw_sw_blur.c:382:13:blur_3_bytes_init	2
+../Core/Src/lvgl/draw/sw/lv_draw_sw_blur.c:401:13:blur_2_bytes_init	3
+../Core/Src/lvgl/draw/sw/lv_draw_sw_blur.c:432:24:blur_2_bytes	3
+../Core/Src/lvgl/draw/sw/lv_draw_sw_blur.c:470:20:blur_3_bytes	1
+../Core/Src/lvgl/draw/sw/lv_draw_sw_blur.c:494:16:get_rounded_edge_point	3
+../Core/Src/lvgl/draw/sw/lv_draw_sw_blur.c:59:6:lv_draw_sw_blur	59

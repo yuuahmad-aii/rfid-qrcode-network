@@ -1,0 +1,7 @@
+../Core/Src/lvgl/themes/mono/lv_theme_mono.c:259:13:theme_apply	48	static
+../Core/Src/lvgl/themes/mono/../../core/../misc/lv_style.h:604:20:lv_style_set_pad_all	16	static
+../Core/Src/lvgl/themes/mono/lv_theme_mono.c:217:6:lv_theme_mono_is_inited	0	static
+../Core/Src/lvgl/themes/mono/lv_theme_mono.c:546:13:style_init_reset	8	static
+../Core/Src/lvgl/themes/mono/lv_theme_mono.c:184:14:lv_theme_mono_init	104	static
+../Core/Src/lvgl/themes/mono/lv_theme_mono.c:224:14:lv_theme_mono_get	8	static
+../Core/Src/lvgl/themes/mono/lv_theme_mono.c:233:6:lv_theme_mono_deinit	16	static

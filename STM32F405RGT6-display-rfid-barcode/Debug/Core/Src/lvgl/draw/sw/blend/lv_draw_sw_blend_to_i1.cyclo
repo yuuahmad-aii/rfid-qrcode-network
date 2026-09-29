@@ -1,0 +1,9 @@
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:1261:42:set_bit	2
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:1266:42:clear_bit	2
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:1271:45:get_bit	2
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:1277:50:lv_color16_from_u16	1
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:1242:42:lv_color_8_8_mix	3
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:1209:42:blend_non_normal_pixel	6
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:843:35:rgb888_image_blend	17
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:227:28:lv_draw_sw_blend_color_to_i1	23
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_i1.c:333:28:lv_draw_sw_blend_image_to_i1	130

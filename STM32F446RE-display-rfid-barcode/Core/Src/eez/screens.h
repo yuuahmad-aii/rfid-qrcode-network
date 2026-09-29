@@ -10,34 +10,37 @@ extern "C" {
 // Screens
 
 enum ScreensEnum {
-    _SCREEN_ID_FIRST = 1,
-    SCREEN_ID_MAIN = 1,
-    SCREEN_ID_ADMIN_PASSWORD = 2,
-    SCREEN_ID_ADMIN_PANEL = 3,
-    SCREEN_ID_QR_READ = 4,
-    SCREEN_ID_RFID_READ = 5,
-    SCREEN_ID_ACCESS_REJECTED = 6,
-    SCREEN_ID_ACCESS_ACCEPTED = 7,
-    _SCREEN_ID_LAST = 7
+  _SCREEN_ID_FIRST = 1,
+  SCREEN_ID_MAIN = 1,
+  SCREEN_ID_ADMIN_PASSWORD = 2,
+  SCREEN_ID_ADMIN_PANEL = 3,
+  SCREEN_ID_QR_READ = 4,
+  SCREEN_ID_RFID_READ = 5,
+  SCREEN_ID_ACCESS_REJECTED = 6,
+  SCREEN_ID_ACCESS_ACCEPTED = 7,
+  _SCREEN_ID_LAST = 7
 };
 
 typedef struct _objects_t {
-    lv_obj_t *main;
-    lv_obj_t *admin_password;
-    lv_obj_t *admin_panel;
-    lv_obj_t *qr_read;
-    lv_obj_t *rfid_read;
-    lv_obj_t *access_rejected;
-    lv_obj_t *access_accepted;
-    lv_obj_t *tombol_admin;
-    lv_obj_t *button_matrix_password;
-    lv_obj_t *textarea_input_password;
-    lv_obj_t *spinner_loading_1;
-    lv_obj_t *id_qrcode;
-    lv_obj_t *rfid_terdeteksi;
-    lv_obj_t *spinner_loading;
-    lv_obj_t *id_rfid;
-    lv_obj_t *error_reason;
+  lv_obj_t *main;
+  lv_obj_t *admin_password;
+  lv_obj_t *admin_panel;
+  lv_obj_t *qr_read;
+  lv_obj_t *rfid_read;
+  lv_obj_t *access_rejected;
+  lv_obj_t *access_accepted;
+  lv_obj_t *tombol_admin;
+  lv_obj_t *button_matrix_password;
+  lv_obj_t *textarea_input_password;
+  lv_obj_t *spinner_loading_1;
+  lv_obj_t *id_qrcode;
+  lv_obj_t *rfid_terdeteksi;
+  lv_obj_t *spinner_loading;
+  lv_obj_t *id_rfid;
+  lv_obj_t *error_reason;
+  lv_obj_t *id_user;
+  lv_obj_t *nama_user;
+  lv_obj_t *posisi_user;
 } objects_t;
 
 extern objects_t objects;

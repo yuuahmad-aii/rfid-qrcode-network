@@ -1,0 +1,7 @@
+../Core/Src/lvgl/misc/lv_pending.c:102:20:lv_pending_array_clear	24	static
+../Core/Src/lvgl/misc/lv_pending.c:48:16:lv_pending_create	24	static
+../Core/Src/lvgl/misc/lv_pending.c:68:6:lv_pending_set_free_cb	0	static
+../Core/Src/lvgl/misc/lv_pending.c:77:6:lv_pending_add	0	static
+../Core/Src/lvgl/misc/lv_pending.c:84:6:lv_pending_remove_all	8	static
+../Core/Src/lvgl/misc/lv_pending.c:58:6:lv_pending_destroy	8	static
+../Core/Src/lvgl/misc/lv_pending.c:92:6:lv_pending_swap	0	static

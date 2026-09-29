@@ -23,17 +23,16 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "eez/ui.h"
 #include "ili9488.h"
+#include "lvgl.h"
 #include "rc522.h"
 #include "usbh_hid.h"
 #include "usbh_hid_keybd.h"
 #include "xpt2046.h"
-#include "lvgl.h"
-#include "eez/ui.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-
 
 /* USER CODE END Includes */
 
@@ -42,57 +41,55 @@
 #include "eez/screens.h"
 
 extern void loadScreen(enum ScreensEnum screenId);
-void revert_to_main_cb(lv_timer_t * t) {
-    loadScreen(SCREEN_ID_MAIN);
+void revert_to_main_cb(lv_timer_t *t) { loadScreen(SCREEN_ID_MAIN); }
+
+static lv_timer_t *admin_timer = NULL;
+static void go_admin_cb(lv_timer_t *t) {
+  if (objects.textarea_input_password != NULL) {
+    lv_textarea_set_text(objects.textarea_input_password, "");
+  }
+  loadScreen(SCREEN_ID_ADMIN_PASSWORD);
 }
 
+void action_btn_admin_on_pressed(lv_event_t *e) {
+  if (admin_timer == NULL) {
+    admin_timer = lv_timer_create(go_admin_cb, 50, NULL);
+    lv_timer_set_repeat_count(admin_timer, 1);
+  } else {
+    lv_timer_resume(admin_timer);
+    lv_timer_reset(admin_timer);
+  }
+}
 
+void action_button_matrix_password_pressed(lv_event_t *e) {
+  lv_obj_t *obj = lv_event_get_target(e);
+  uint32_t btn_id = lv_buttonmatrix_get_selected_button(obj);
+  if (btn_id == LV_BUTTONMATRIX_BUTTON_NONE)
+    return;
 
-static lv_timer_t * admin_timer = NULL;
-static void go_admin_cb(lv_timer_t * t) {
+  const char *txt = lv_buttonmatrix_get_button_text(obj, btn_id);
+  if (!txt)
+    return;
+
+  if (strcmp(txt, "ok") == 0) {
     if (objects.textarea_input_password != NULL) {
-        lv_textarea_set_text(objects.textarea_input_password, "");
+      const char *pwd = lv_textarea_get_text(objects.textarea_input_password);
+      if (strcmp(pwd, "1234") == 0) {
+        loadScreen(SCREEN_ID_ADMIN_PANEL);
+      } else {
+        loadScreen(SCREEN_ID_MAIN);
+      }
+      lv_textarea_set_text(objects.textarea_input_password, "");
     }
-    loadScreen(SCREEN_ID_ADMIN_PASSWORD);
-}
-
-void action_btn_admin_on_pressed(lv_event_t * e) {
-    if (admin_timer == NULL) {
-        admin_timer = lv_timer_create(go_admin_cb, 50, NULL);
-        lv_timer_set_repeat_count(admin_timer, 1);
-    } else {
-        lv_timer_resume(admin_timer);
-        lv_timer_reset(admin_timer);
+  } else if (strcmp(txt, "del") == 0) {
+    if (objects.textarea_input_password != NULL) {
+      lv_textarea_delete_char(objects.textarea_input_password);
     }
-}
-
-void action_button_matrix_password_pressed(lv_event_t * e) {
-    lv_obj_t * obj = lv_event_get_target(e);
-    uint32_t btn_id = lv_buttonmatrix_get_selected_button(obj);
-    if(btn_id == LV_BUTTONMATRIX_BUTTON_NONE) return;
-    
-    const char * txt = lv_buttonmatrix_get_button_text(obj, btn_id);
-    if (!txt) return;
-
-    if (strcmp(txt, "ok") == 0) {
-        if (objects.textarea_input_password != NULL) {
-            const char * pwd = lv_textarea_get_text(objects.textarea_input_password);
-            if (strcmp(pwd, "1234") == 0) {
-                loadScreen(SCREEN_ID_ADMIN_PANEL);
-            } else {
-                loadScreen(SCREEN_ID_MAIN);
-            }
-            lv_textarea_set_text(objects.textarea_input_password, "");
-        }
-    } else if (strcmp(txt, "del") == 0) {
-        if (objects.textarea_input_password != NULL) {
-            lv_textarea_delete_char(objects.textarea_input_password);
-        }
-    } else {
-        if (objects.textarea_input_password != NULL) {
-            lv_textarea_add_text(objects.textarea_input_password, txt);
-        }
+  } else {
+    if (objects.textarea_input_password != NULL) {
+      lv_textarea_add_text(objects.textarea_input_password, txt);
     }
+  }
 }
 /* USER CODE END PTD */
 
@@ -194,8 +191,9 @@ void UI_UpdateClock(void);
 void UI_DrawMenuAdmin(void);
 
 // LVGL Callbacks
-static void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map);
-static void my_touchpad_read(lv_indev_t * indev, lv_indev_data_t * data);
+static void my_disp_flush(lv_display_t *disp, const lv_area_t *area,
+                          uint8_t *px_map);
+static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -364,11 +362,10 @@ void UI_DrawMenuAdmin(void) {
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
 
   /* USER CODE BEGIN 1 */
 
@@ -376,7 +373,8 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+   */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -428,29 +426,29 @@ int main(void)
                             ILI9488_BLACK, 2);
   HAL_Delay(1000);
   */
-  
+
   currentState = STATE_STANDBY;
   // UI_DrawStandby(); // Commented out for LVGL
-
 
   // --- LVGL Setup ---
   lv_init();
 
   // 1. Display Setup
-  lv_display_t * disp = lv_display_create(ILI9488_WIDTH, ILI9488_HEIGHT);
+  lv_display_t *disp = lv_display_create(ILI9488_WIDTH, ILI9488_HEIGHT);
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB888);
   lv_display_set_flush_cb(disp, my_disp_flush);
-  
-  // Create a draw buffer for LVGL (e.g., 1/10 screen size)
-  #define DRAW_BUF_SIZE (ILI9488_WIDTH * ILI9488_HEIGHT / 10 * 1)
+
+// Create a draw buffer for LVGL (e.g., 1/10 screen size)
+#define DRAW_BUF_SIZE (ILI9488_WIDTH * ILI9488_HEIGHT / 10 * 1)
   static uint8_t buf1[DRAW_BUF_SIZE] __attribute__((aligned(64)));
-  lv_display_set_buffers(disp, buf1, NULL, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, buf1, NULL, sizeof(buf1),
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   // 2. Input Device Setup (Touch)
-  lv_indev_t * indev = lv_indev_create();
+  lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
-  
+
   // Start TIM14 for LVGL tick
   HAL_TIM_Base_Start_IT(&htim14);
 
@@ -465,7 +463,7 @@ int main(void)
   while (1) {
     uint32_t current_tick = HAL_GetTick();
     if (current_tick > last_tick) {
-        lv_tick_inc(current_tick - last_tick);
+      lv_tick_inc(current_tick - last_tick);
     }
     last_tick = current_tick;
     lv_timer_handler();
@@ -475,20 +473,22 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     ui_tick();
-    
+
     // --- Background Scanner Checks ---
-    static lv_timer_t * revert_timer = NULL;
+    static lv_timer_t *revert_timer = NULL;
 
     if (barcode_ready) {
       barcode_ready = false;
       static char barcode_uart_buf[90];
-      snprintf(barcode_uart_buf, sizeof(barcode_uart_buf), "BARCODE:%s\n", barcode_display_buffer);
-      HAL_UART_Transmit_DMA(&huart1, (uint8_t *)barcode_uart_buf, strlen(barcode_uart_buf));
-      
+      snprintf(barcode_uart_buf, sizeof(barcode_uart_buf), "BARCODE:%s\n",
+               barcode_display_buffer);
+      HAL_UART_Transmit_DMA(&huart1, (uint8_t *)barcode_uart_buf,
+                            strlen(barcode_uart_buf));
+
       // UI Update
       loadScreen(SCREEN_ID_QR_READ);
       if (objects.id_qrcode) {
-          lv_label_set_text(objects.id_qrcode, barcode_display_buffer);
+        lv_label_set_text(objects.id_qrcode, barcode_display_buffer);
       }
     }
 
@@ -498,15 +498,18 @@ int main(void)
         last_rfid_scan = HAL_GetTick();
         static char rfid_uart_buf[32];
         snprintf(rfid_uart_buf, sizeof(rfid_uart_buf),
-                 "RFID:%02X%02X%02X%02X\n", rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
-        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rfid_uart_buf, strlen(rfid_uart_buf));
-        
+                 "RFID:%02X%02X%02X%02X\n", rfid_id[0], rfid_id[1], rfid_id[2],
+                 rfid_id[3]);
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rfid_uart_buf,
+                              strlen(rfid_uart_buf));
+
         // UI Update
         loadScreen(SCREEN_ID_RFID_READ);
         if (objects.id_rfid) {
-            static char rfid_str_ui[32];
-            snprintf(rfid_str_ui, sizeof(rfid_str_ui), "%02X%02X%02X%02X", rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
-            lv_label_set_text(objects.id_rfid, rfid_str_ui);
+          static char rfid_str_ui[32];
+          snprintf(rfid_str_ui, sizeof(rfid_str_ui), "%02X%02X%02X%02X",
+                   rfid_id[0], rfid_id[1], rfid_id[2], rfid_id[3]);
+          lv_label_set_text(objects.id_rfid, rfid_str_ui);
         }
       }
     }
@@ -515,27 +518,43 @@ int main(void)
     if (api_status_granted) {
       api_status_granted = false;
       loadScreen(SCREEN_ID_ACCESS_ACCEPTED);
+
+      // Parse id, nama, posisi from api_result_msg (Format: id|nama|posisi)
+      char *id_str = strtok(api_result_msg, "|");
+      char *nama_str = strtok(NULL, "|");
+      char *pos_str = strtok(NULL, "|");
+
+      if (id_str != NULL && objects.id_user != NULL) {
+        lv_label_set_text(objects.id_user, id_str);
+      }
+      if (nama_str != NULL && objects.nama_user != NULL) {
+        lv_label_set_text(objects.nama_user, nama_str);
+      }
+      if (pos_str != NULL && objects.posisi_user != NULL) {
+        lv_label_set_text(objects.posisi_user, pos_str);
+      }
+
       if (revert_timer == NULL) {
-          revert_timer = lv_timer_create(revert_to_main_cb, 3000, NULL);
-          lv_timer_set_repeat_count(revert_timer, 1);
+        revert_timer = lv_timer_create(revert_to_main_cb, 3000, NULL);
+        lv_timer_set_repeat_count(revert_timer, 1);
       } else {
-          lv_timer_resume(revert_timer);
-          lv_timer_reset(revert_timer);
+        lv_timer_resume(revert_timer);
+        lv_timer_reset(revert_timer);
       }
     }
-    
+
     if (api_status_denied) {
       api_status_denied = false;
       loadScreen(SCREEN_ID_ACCESS_REJECTED);
       if (objects.error_reason != NULL) {
-          lv_label_set_text(objects.error_reason, api_result_msg);
+        lv_label_set_text(objects.error_reason, api_result_msg);
       }
       if (revert_timer == NULL) {
-          revert_timer = lv_timer_create(revert_to_main_cb, 3000, NULL);
-          lv_timer_set_repeat_count(revert_timer, 1);
+        revert_timer = lv_timer_create(revert_to_main_cb, 3000, NULL);
+        lv_timer_set_repeat_count(revert_timer, 1);
       } else {
-          lv_timer_resume(revert_timer);
-          lv_timer_reset(revert_timer);
+        lv_timer_resume(revert_timer);
+        lv_timer_reset(revert_timer);
       }
     }
   }
@@ -543,23 +562,23 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
+   * in the RCC_OscInitTypeDef structure.
+   */
+  RCC_OscInitStruct.OscillatorType =
+      RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
@@ -570,33 +589,30 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 7;
   RCC_OscInitStruct.PLL.PLLR = 2;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLRCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK) {
     Error_Handler();
   }
 }
 
 /**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC1_Init(void)
-{
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_ADC1_Init(void) {
 
   /* USER CODE BEGIN ADC1_Init 0 */
 
@@ -608,8 +624,9 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 1 */
 
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+  /** Configure the global features of the ADC (Clock, Resolution, Data
+   * Alignment and number of conversion)
+   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -622,33 +639,30 @@ static void MX_ADC1_Init(void)
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) {
     Error_Handler();
   }
 
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+  /** Configure for the selected ADC regular channel its corresponding rank in
+   * the sequencer and its sample time.
+   */
   sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
-  * @brief RTC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_RTC_Init(void)
-{
+ * @brief RTC Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_RTC_Init(void) {
 
   /* USER CODE BEGIN RTC_Init 0 */
 
@@ -662,7 +676,7 @@ static void MX_RTC_Init(void)
   /* USER CODE END RTC_Init 1 */
 
   /** Initialize RTC Only
-  */
+   */
   hrtc.Instance = RTC;
   hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
   hrtc.Init.AsynchPrediv = 127;
@@ -670,8 +684,7 @@ static void MX_RTC_Init(void)
   hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
   hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
   hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
+  if (HAL_RTC_Init(&hrtc) != HAL_OK) {
     Error_Handler();
   }
 
@@ -680,14 +693,13 @@ static void MX_RTC_Init(void)
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
-  */
+   */
   sTime.Hours = 0x0;
   sTime.Minutes = 0x0;
   sTime.Seconds = 0x0;
   sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
   sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-  {
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK) {
     Error_Handler();
   }
   sDate.WeekDay = RTC_WEEKDAY_MONDAY;
@@ -695,23 +707,20 @@ static void MX_RTC_Init(void)
   sDate.Date = 0x1;
   sDate.Year = 0x0;
 
-  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
-  {
+  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
-
 }
 
 /**
-  * @brief SDIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SDIO_SD_Init(void)
-{
+ * @brief SDIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SDIO_SD_Init(void) {
 
   /* USER CODE BEGIN SDIO_Init 0 */
 
@@ -730,16 +739,14 @@ static void MX_SDIO_SD_Init(void)
   /* USER CODE BEGIN SDIO_Init 2 */
 
   /* USER CODE END SDIO_Init 2 */
-
 }
 
 /**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
+ * @brief SPI1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI1_Init(void) {
 
   /* USER CODE BEGIN SPI1_Init 0 */
 
@@ -761,23 +768,20 @@ static void MX_SPI1_Init(void)
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
-
 }
 
 /**
-  * @brief SPI2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI2_Init(void)
-{
+ * @brief SPI2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI2_Init(void) {
 
   /* USER CODE BEGIN SPI2_Init 0 */
 
@@ -799,23 +803,20 @@ static void MX_SPI2_Init(void)
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi2.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI2_Init 2 */
 
   /* USER CODE END SPI2_Init 2 */
-
 }
 
 /**
-  * @brief SPI3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI3_Init(void)
-{
+ * @brief SPI3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI3_Init(void) {
 
   /* USER CODE BEGIN SPI3_Init 0 */
 
@@ -837,23 +838,20 @@ static void MX_SPI3_Init(void)
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi3.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi3) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi3) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI3_Init 2 */
 
   /* USER CODE END SPI3_Init 2 */
-
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM3_Init(void) {
 
   /* USER CODE BEGIN TIM3_Init 0 */
 
@@ -871,38 +869,33 @@ static void MX_TIM3_Init(void)
   htim3.Init.Period = 65535;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK) {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) {
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
-
 }
 
 /**
-  * @brief TIM14 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM14_Init(void)
-{
+ * @brief TIM14 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM14_Init(void) {
 
   /* USER CODE BEGIN TIM14_Init 0 */
 
@@ -917,23 +910,20 @@ static void MX_TIM14_Init(void)
   htim14.Init.Period = 65535;
   htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim14.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim14) != HAL_OK)
-  {
+  if (HAL_TIM_Base_Init(&htim14) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM14_Init 2 */
 
   /* USER CODE END TIM14_Init 2 */
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART1_UART_Init(void) {
 
   /* USER CODE BEGIN USART1_Init 0 */
 
@@ -950,21 +940,18 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
+  if (HAL_UART_Init(&huart1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
+ * Enable DMA controller clock
+ */
+static void MX_DMA_Init(void) {
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
@@ -998,16 +985,14 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream7_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -1024,10 +1009,13 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, SPI1_RST_Pin|SPI1_DC_Pin|USB_POWER_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, SPI1_RST_Pin | SPI1_DC_Pin | USB_POWER_Pin,
+                    GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, USER_LED_Pin|SPI2_CS_Pin|SPI3_CS_Pin|SPI3_RST_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB,
+                    USER_LED_Pin | SPI2_CS_Pin | SPI3_CS_Pin | SPI3_RST_Pin,
+                    GPIO_PIN_RESET);
 
   /*Configure GPIO pin : USER_BTN_Pin */
   GPIO_InitStruct.Pin = USER_BTN_Pin;
@@ -1043,7 +1031,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(SPI1_CS_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI1_RST_Pin SPI1_DC_Pin */
-  GPIO_InitStruct.Pin = SPI1_RST_Pin|SPI1_DC_Pin;
+  GPIO_InitStruct.Pin = SPI1_RST_Pin | SPI1_DC_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1057,7 +1045,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(USER_LED_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI2_CS_Pin SPI3_CS_Pin SPI3_RST_Pin */
-  GPIO_InitStruct.Pin = SPI2_CS_Pin|SPI3_CS_Pin|SPI3_RST_Pin;
+  GPIO_InitStruct.Pin = SPI2_CS_Pin | SPI3_CS_Pin | SPI3_RST_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1114,40 +1102,37 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 }
 
 /* LVGL Display Flush Callback */
-static void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
-{
-    ILI9488_DrawBitmapLVGL(area->x1, area->y1, area->x2, area->y2, px_map);
-    lv_display_flush_ready(disp);
+static void my_disp_flush(lv_display_t *disp, const lv_area_t *area,
+                          uint8_t *px_map) {
+  ILI9488_DrawBitmapLVGL(area->x1, area->y1, area->x2, area->y2, px_map);
+  lv_display_flush_ready(disp);
 }
 
 /* LVGL Touchpad Read Callback */
-static void my_touchpad_read(lv_indev_t * indev, lv_indev_data_t * data)
-{
-    uint16_t touch_x = 0, touch_y = 0;
-    if(XPT2046_GetTouch(&touch_x, &touch_y)) {
-        data->state = LV_INDEV_STATE_PRESSED;
-        data->point.x = touch_x;
-        data->point.y = touch_y;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
-    }
+static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
+  uint16_t touch_x = 0, touch_y = 0;
+  if (XPT2046_GetTouch(&touch_x, &touch_y)) {
+    data->state = LV_INDEV_STATE_PRESSED;
+    data->point.x = touch_x;
+    data->point.y = touch_y;
+  } else {
+    data->state = LV_INDEV_STATE_RELEASED;
+  }
 }
 
 /* Timer callback for LVGL */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-    if (htim->Instance == TIM14) {
-        // Unused now, tick is handled in main loop
-    }
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim->Instance == TIM14) {
+    // Unused now, tick is handled in main loop
+  }
 }
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
@@ -1157,14 +1142,13 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,

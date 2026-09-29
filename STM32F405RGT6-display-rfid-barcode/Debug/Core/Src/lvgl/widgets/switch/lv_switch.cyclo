@@ -1,0 +1,9 @@
+../Core/Src/lvgl/widgets/switch/lv_switch.c:302:13:lv_switch_anim_completed	1
+../Core/Src/lvgl/widgets/switch/lv_switch.c:292:13:lv_switch_anim_exec_cb	1
+../Core/Src/lvgl/widgets/switch/lv_switch.c:142:13:lv_switch_destructor	1
+../Core/Src/lvgl/widgets/switch/lv_switch.c:125:13:lv_switch_constructor	1
+../Core/Src/lvgl/widgets/switch/lv_switch.c:192:13:draw_main	10
+../Core/Src/lvgl/widgets/switch/lv_switch.c:150:13:lv_switch_event	11
+../Core/Src/lvgl/widgets/switch/lv_switch.c:88:12:lv_switch_create	1
+../Core/Src/lvgl/widgets/switch/lv_switch.c:100:6:lv_switch_set_orientation	1
+../Core/Src/lvgl/widgets/switch/lv_switch.c:113:25:lv_switch_get_orientation	1

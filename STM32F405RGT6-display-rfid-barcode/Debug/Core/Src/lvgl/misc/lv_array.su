@@ -1,0 +1,13 @@
+../Core/Src/lvgl/misc/lv_array.c:39:6:lv_array_init	8	static
+../Core/Src/lvgl/misc/lv_array.c:50:6:lv_array_init_from_buf	8	static
+../Core/Src/lvgl/misc/lv_array.c:61:6:lv_array_deinit	8	static
+../Core/Src/lvgl/misc/lv_array.c:72:6:lv_array_copy	16	static
+../Core/Src/lvgl/misc/lv_array.c:169:6:lv_array_resize	16	static
+../Core/Src/lvgl/misc/lv_array.c:83:6:lv_array_shrink	0	static
+../Core/Src/lvgl/misc/lv_array.c:189:13:lv_array_concat	24	static
+../Core/Src/lvgl/misc/lv_array.c:206:13:lv_array_push_back	16	static
+../Core/Src/lvgl/misc/lv_array.c:228:8:lv_array_at	0	static
+../Core/Src/lvgl/misc/lv_array.c:90:13:lv_array_remove	16	static
+../Core/Src/lvgl/misc/lv_array.c:116:13:lv_array_remove_unordered	16	static
+../Core/Src/lvgl/misc/lv_array.c:143:13:lv_array_erase	24	static
+../Core/Src/lvgl/misc/lv_array.c:238:13:lv_array_assign	16	static

@@ -1,0 +1,7 @@
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:208:16:evaluate	0	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:250:16:dispatch	16	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:75:6:lv_draw_sw_init	8	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:115:6:lv_draw_sw_deinit	0	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:151:6:lv_draw_sw_register_blend_handler	8	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:176:6:lv_draw_sw_unregister_blend_handler	16	static
+../Core/Src/lvgl/draw/sw/lv_draw_sw.c:191:28:lv_draw_sw_get_blend_handler	8	static

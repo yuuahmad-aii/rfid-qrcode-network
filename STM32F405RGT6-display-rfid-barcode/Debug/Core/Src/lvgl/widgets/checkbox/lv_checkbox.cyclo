@@ -1,0 +1,8 @@
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:144:13:lv_checkbox_constructor	1
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:167:13:lv_checkbox_destructor	2
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:231:13:lv_checkbox_draw	4
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:180:13:lv_checkbox_event	5
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:73:12:lv_checkbox_create	1
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:85:6:lv_checkbox_set_text	4
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:117:6:lv_checkbox_set_text_static	2
+../Core/Src/lvgl/widgets/checkbox/lv_checkbox.c:134:14:lv_checkbox_get_text	1

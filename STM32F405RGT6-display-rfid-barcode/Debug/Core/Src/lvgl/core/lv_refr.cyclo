@@ -1,0 +1,16 @@
+../Core/Src/lvgl/core/lv_refr.c:1444:13:wait_for_flushing	4
+../Core/Src/lvgl/core/lv_refr.c:1376:13:draw_buf_flush	11
+../Core/Src/lvgl/core/lv_refr.c:842:13:layer_reshape_draw_buf	1
+../Core/Src/lvgl/core/lv_refr.c:79:6:lv_refr_init	1
+../Core/Src/lvgl/core/lv_refr.c:83:6:lv_refr_deinit	1
+../Core/Src/lvgl/core/lv_refr.c:269:13:lv_inv_area	13
+../Core/Src/lvgl/core/lv_refr.c:348:16:lv_refr_get_disp_refreshing	1
+../Core/Src/lvgl/core/lv_refr.c:357:6:lv_refr_set_disp_refreshing	1
+../Core/Src/lvgl/core/lv_refr.c:457:12:lv_refr_get_top_obj	9
+../Core/Src/lvgl/core/lv_refr.c:494:6:lv_obj_refr	25
+../Core/Src/lvgl/core/lv_refr.c:104:6:lv_obj_redraw	16
+../Core/Src/lvgl/core/lv_refr.c:1092:13:refr_obj_and_children	7
+../Core/Src/lvgl/core/lv_refr.c:969:13:refr_configured_layer	12
+../Core/Src/lvgl/core/lv_refr.c:858:13:refr_area	15
+../Core/Src/lvgl/core/lv_refr.c:362:6:lv_display_refr_timer	52
+../Core/Src/lvgl/core/lv_refr.c:87:6:lv_refr_now	5

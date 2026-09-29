@@ -1,0 +1,7 @@
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:1001:45:get_bit	0	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:950:42:lv_color_16a_16a_mix	24	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:1008:42:blend_non_normal_pixel	24	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:990:6:lv_color_mix_with_alpha_cache_init	8	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:725:35:rgb888_image_blend	80	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:197:28:lv_draw_sw_blend_color_to_al88	64	static
+../Core/Src/lvgl/draw/sw/blend/lv_draw_sw_blend_to_al88.c:309:28:lv_draw_sw_blend_image_to_al88	80	static

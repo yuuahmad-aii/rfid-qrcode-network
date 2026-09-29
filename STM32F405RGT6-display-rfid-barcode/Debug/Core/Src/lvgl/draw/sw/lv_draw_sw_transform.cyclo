@@ -1,0 +1,6 @@
+../Core/Src/lvgl/draw/sw/lv_draw_sw_transform.c:524:21:unpremultiply	2
+../Core/Src/lvgl/draw/sw/lv_draw_sw_transform.c:965:13:transform_al88	41
+../Core/Src/lvgl/draw/sw/lv_draw_sw_transform.c:1083:13:transform_point_upscaled	7
+../Core/Src/lvgl/draw/sw/lv_draw_sw_transform.c:331:13:transform_rgb888	23
+../Core/Src/lvgl/draw/sw/lv_draw_sw_transform.c:656:13:transform_rgb565a8	29
+../Core/Src/lvgl/draw/sw/lv_draw_sw_transform.c:108:6:lv_draw_sw_transform	122

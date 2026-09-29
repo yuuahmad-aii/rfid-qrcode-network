@@ -53,12 +53,25 @@ static const char *cloudflare_ca_pem = \
 "-----END CERTIFICATE-----\n";
 
 #define UART_PORT_NUM UART_NUM_1
+
+
+static const char *TAG = "app_main";
+
+static void uart_send_and_log(const char* msg) {
+    char clean_msg[128];
+    strncpy(clean_msg, msg, sizeof(clean_msg)-1);
+    clean_msg[sizeof(clean_msg)-1] = '\0';
+    char *newline = strchr(clean_msg, '\n');
+    if (newline) *newline = '\0';
+    
+    ESP_LOGI(TAG, "UART Sent: %s", clean_msg);
+    uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
+}
 #define UART_BAUD_RATE 115200
 #define UART_TXD_PIN GPIO_NUM_4
 #define UART_RXD_PIN GPIO_NUM_5
 #define BUF_SIZE 1024
 
-static const char *TAG = "app_main";
 
 static led_strip_handle_t led_strip;
 static SemaphoreHandle_t button_sem;
@@ -174,7 +187,7 @@ static void send_api_request(const char *identifier, const char *type) {
                                          pdFALSE, pdFALSE, 0);
   if ((bits & WIFI_CONNECTED_BIT) == 0) {
     ESP_LOGW(TAG, "WiFi not connected, ignoring HTTP request.");
-    uart_write_bytes(UART_PORT_NUM, "DENIED:WiFi Disconnected\n", 25);
+    uart_send_and_log("DENIED:WiFi Disconnected\n");
     return;
   }
 
@@ -226,16 +239,32 @@ static void send_api_request(const char *identifier, const char *type) {
     cJSON *response_json = cJSON_Parse(api_response_buffer);
     if (response_json != NULL) {
       cJSON *success = cJSON_GetObjectItem(response_json, "success");
-      if (cJSON_IsTrue(success)) {
+      cJSON *result = cJSON_GetObjectItem(response_json, "attendance_result");
+      
+      if ((success && cJSON_IsTrue(success)) || result != NULL) {
         set_led_color(0, 50, 0); // Green (Success)
-        cJSON *result = cJSON_GetObjectItem(response_json, "attendance_result");
         if (result && cJSON_IsObject(result)) {
-           cJSON *name = cJSON_GetObjectItem(result, "name");
-           char msg[64];
-           snprintf(msg, sizeof(msg), "GRANTED:%s\n", name ? name->valuestring : "UNKNOWN");
-           uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
+           cJSON *id_json = cJSON_GetObjectItem(result, "id");
+           cJSON *name_json = cJSON_GetObjectItem(result, "name");
+           if (!name_json) name_json = cJSON_GetObjectItem(result, "nama");
+           cJSON *pos_json = cJSON_GetObjectItem(result, "position");
+           if (!pos_json) pos_json = cJSON_GetObjectItem(result, "posisi");
+           if (!pos_json) pos_json = cJSON_GetObjectItem(result, "jabatan");
+
+           char id_str[32] = "-";
+           if (id_json) {
+               if (cJSON_IsString(id_json)) snprintf(id_str, sizeof(id_str), "%s", id_json->valuestring);
+               else if (cJSON_IsNumber(id_json)) snprintf(id_str, sizeof(id_str), "%d", id_json->valueint);
+           }
+
+           const char *name_str = (name_json && cJSON_IsString(name_json)) ? name_json->valuestring : "-";
+           const char *pos_str = (pos_json && cJSON_IsString(pos_json)) ? pos_json->valuestring : "-";
+
+           char msg[128];
+           snprintf(msg, sizeof(msg), "GRANTED:%s|%s|%s\n", id_str, name_str, pos_str);
+           uart_send_and_log(msg);
         } else {
-           uart_write_bytes(UART_PORT_NUM, "GRANTED:Berhasil\n", 17);
+           uart_send_and_log("GRANTED:-|-|-\n");
         }
       } else {
         set_led_color(50, 0, 0); // Red (Failed)
@@ -246,23 +275,23 @@ static void send_api_request(const char *identifier, const char *type) {
              cJSON *reason = cJSON_GetObjectItem(item, "reason");
              char msg[64];
              snprintf(msg, sizeof(msg), "DENIED:%s\n", reason ? reason->valuestring : "Unknown error");
-             uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
+             uart_send_and_log(msg);
            } else {
-             uart_write_bytes(UART_PORT_NUM, "DENIED:Ditolak Server\n", 22);
+             uart_send_and_log("DENIED:Ditolak Server\n");
            }
         } else {
-           uart_write_bytes(UART_PORT_NUM, "DENIED:Ditolak Server\n", 22);
+           uart_send_and_log("DENIED:Ditolak Server\n");
         }
       }
       cJSON_Delete(response_json);
     } else {
-      uart_write_bytes(UART_PORT_NUM, "DENIED:Parse Error\n", 19);
+      uart_send_and_log("DENIED:Parse Error\n");
       set_led_color(50, 0, 0); // Red
     }
   } else {
     ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
     set_led_color(50, 0, 0); // Red (Failed)
-    uart_write_bytes(UART_PORT_NUM, "DENIED:Koneksi Gagal\n", 21);
+    uart_send_and_log("DENIED:Koneksi Gagal\n");
   }
   esp_http_client_cleanup(client);
   free(post_data);
@@ -322,7 +351,7 @@ static void sync_time_task(void *pvParameters) {
         esp_netif_sntp_init(&sntp_config);
 
         ESP_LOGI(TAG, "Waiting for system time to be set...");
-        esp_err_t wait_err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000));
+        esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000));
         time(&now);
         localtime_r(&now, &timeinfo);
         if (timeinfo.tm_year >= (2020 - 1900)) {
@@ -360,22 +389,22 @@ static void sync_time_task(void *pvParameters) {
 
             char uart_msg[64];
             snprintf(uart_msg, sizeof(uart_msg), "TIME:%s\n", time_str);
-            uart_write_bytes(UART_PORT_NUM, uart_msg, strlen(uart_msg));
+            uart_send_and_log(uart_msg);
             ESP_LOGI(TAG, "Sent to STM32: %s", uart_msg);
           } else {
             ESP_LOGE(TAG, "Failed to parse time. Response: %s",
                      time_response_buffer);
-            uart_write_bytes(UART_PORT_NUM, "TIME_ERR:PARSE_FAIL\n", 20);
+            uart_send_and_log("TIME_ERR:PARSE_FAIL\n");
           }
         } else {
           ESP_LOGE(TAG, "HTTP GET time failed status: %d", status_code);
           char err_msg[64];
           snprintf(err_msg, sizeof(err_msg), "TIME_ERR:HTTP_%d\n", status_code);
-          uart_write_bytes(UART_PORT_NUM, err_msg, strlen(err_msg));
+          uart_send_and_log(err_msg);
         }
       } else {
         ESP_LOGE(TAG, "HTTP GET time failed: %s", esp_err_to_name(err));
-        uart_write_bytes(UART_PORT_NUM, "TIME_ERR:CONN_FAIL\n", 19);
+        uart_send_and_log("TIME_ERR:CONN_FAIL\n");
       }
       esp_http_client_cleanup(client);
 

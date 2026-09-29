@@ -1,0 +1,3 @@
+../Core/Src/lvgl/draw/sw/lv_draw_sw_letter.c:129:35:draw_letter_cb	14
+../Core/Src/lvgl/draw/sw/lv_draw_sw_letter.c:79:6:lv_draw_sw_letter	3
+../Core/Src/lvgl/draw/sw/lv_draw_sw_letter.c:107:6:lv_draw_sw_label	2

@@ -1,0 +1,4 @@
+../Core/Src/xpt2046.c:26:17:XPT2046_ReadValue	24	static
+../Core/Src/xpt2046.c:38:6:XPT2046_Init	0	static
+../Core/Src/xpt2046.c:40:6:XPT2046_IsTouched	8	static
+../Core/Src/xpt2046.c:45:6:XPT2046_GetTouch	32	static

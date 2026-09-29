@@ -1,0 +1,14 @@
+../Core/Src/lvgl/themes/lv_theme.c:134:13:apply_theme	4
+../Core/Src/lvgl/themes/lv_theme.c:145:13:apply_theme_recursion	3
+../Core/Src/lvgl/themes/lv_theme.c:41:15:lv_theme_get_from_obj	2
+../Core/Src/lvgl/themes/lv_theme.c:47:14:lv_theme_create	1
+../Core/Src/lvgl/themes/lv_theme.c:53:6:lv_theme_delete	1
+../Core/Src/lvgl/themes/lv_theme.c:58:6:lv_theme_copy	3
+../Core/Src/lvgl/themes/lv_theme.c:67:6:lv_theme_apply	2
+../Core/Src/lvgl/themes/lv_theme.c:77:6:lv_theme_set_parent	1
+../Core/Src/lvgl/themes/lv_theme.c:82:6:lv_theme_set_apply_cb	1
+../Core/Src/lvgl/themes/lv_theme.c:87:19:lv_theme_get_font_small	2
+../Core/Src/lvgl/themes/lv_theme.c:93:19:lv_theme_get_font_normal	2
+../Core/Src/lvgl/themes/lv_theme.c:99:19:lv_theme_get_font_large	2
+../Core/Src/lvgl/themes/lv_theme.c:105:12:lv_theme_get_color_primary	2
+../Core/Src/lvgl/themes/lv_theme.c:111:12:lv_theme_get_color_secondary	2

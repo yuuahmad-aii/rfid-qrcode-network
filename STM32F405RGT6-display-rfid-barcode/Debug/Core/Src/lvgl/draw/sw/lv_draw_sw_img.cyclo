@@ -1,0 +1,4 @@
+../Core/Src/lvgl/draw/sw/lv_draw_sw_img.c:792:13:recolor	25
+../Core/Src/lvgl/draw/sw/lv_draw_sw_img.c:219:13:img_draw_core	77
+../Core/Src/lvgl/draw/sw/lv_draw_sw_img.c:204:6:lv_draw_sw_image	2
+../Core/Src/lvgl/draw/sw/lv_draw_sw_img.c:107:6:lv_draw_sw_layer	9

@@ -7,8 +7,8 @@
 extern "C" {
 #endif
 
-extern void action_btn_admin_on_pressed(lv_event_t * e);
-extern void action_button_matrix_password_pressed(lv_event_t * e);
+extern void action_btn_admin_on_pressed(lv_event_t *e);
+extern void action_button_matrix_password_pressed(lv_event_t *e);
 
 #ifdef __cplusplus
 }
