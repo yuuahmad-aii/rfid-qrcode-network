@@ -32,6 +32,9 @@
 #include <stdbool.h>
 #include "lvgl.h"
 #include "eez/ui.h"
+#include "usbh_core.h"
+#include "usbh_hid.h"
+#include "usbh_hid_keybd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -113,6 +116,84 @@ void App_TouchProcess(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+extern USBH_HandleTypeDef hUsbHostFS;
+
+static lv_timer_t * return_main_timer = NULL;
+static void return_main_cb(lv_timer_t * t) {
+    loadScreen(SCREEN_ID_MAIN_SCREEN);
+    return_main_timer = NULL;
+}
+
+uint8_t uart1_rx_data;
+char uart1_rx_buf[256];
+uint16_t uart1_rx_idx = 0;
+volatile uint8_t uart1_rx_ready = 0;
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        if (uart1_rx_data == '\n' || uart1_rx_data == '\r') {
+            uart1_rx_buf[uart1_rx_idx] = '\0';
+            if (uart1_rx_idx > 0) {
+                uart1_rx_ready = 1;
+            }
+        } else {
+            if (uart1_rx_idx < sizeof(uart1_rx_buf) - 1) {
+                uart1_rx_buf[uart1_rx_idx++] = uart1_rx_data;
+            }
+        }
+        if (!uart1_rx_ready) {
+            HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
+        }
+    }
+}
+
+static void rtc_update_timer_cb(lv_timer_t * timer) {
+    if (objects.obj0 != NULL && lv_obj_is_valid(objects.obj0)) {
+        RTC_TimeTypeDef sTime = {0};
+        RTC_DateTypeDef sDate = {0};
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+        
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d - %02d/%02d/20%02d", 
+                 sTime.Hours, sTime.Minutes, sTime.Seconds, 
+                 sDate.Date, sDate.Month, sDate.Year);
+        lv_label_set_text(objects.obj0, buf);
+    }
+}
+
+void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
+{
+    if (phost == &hUsbHostFS)
+    {
+        HID_KEYBD_Info_TypeDef *k_pinfo;
+        k_pinfo = USBH_HID_GetKeybdInfo(phost);
+        
+        if (k_pinfo != NULL && k_pinfo->keys[0] != 0)
+        {
+            char c = USBH_HID_GetASCIICode(k_pinfo);
+            static char barcode[64];
+            static int b_idx = 0;
+            
+            if (c != 0) {
+                if (c == '\n' || c == '\r') {
+                    barcode[b_idx] = '\0';
+                    if (b_idx > 0) {
+                        char msg[128];
+                        snprintf(msg, sizeof(msg), "BARCODE:%s\n", barcode);
+                        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+                        b_idx = 0;
+                    }
+                } else {
+                    if (b_idx < sizeof(barcode) - 1) {
+                        barcode[b_idx++] = c;
+                    }
+                }
+            }
+        }
+    }
+}
+
 static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   ILI9488_DrawBitmapLVGL(area->x1, area->y1, area->x2, area->y2, px_map);
   lv_display_flush_ready(disp);
@@ -169,8 +250,9 @@ void action_pwd_btn_del_pressed(lv_event_t * e) {
 void action_pwd_btn_ok_pressed(lv_event_t * e) {
     if (objects.textarea_input_password != NULL) {
         const char *pwd = lv_textarea_get_text(objects.textarea_input_password);
-        if (strcmp(pwd, "123456") == 0) { // Contoh password "123456"
+        if (strcmp(pwd, "1234") == 0) { // Password "1234"
             loadScreen(SCREEN_ID_ADMIN_USERS);
+            lv_textarea_set_text(objects.textarea_input_password, ""); // clear for next time
         } else {
             // Wrong password, clear textarea
             lv_textarea_set_text(objects.textarea_input_password, "");
@@ -186,14 +268,35 @@ void action_load_admin_test(lv_event_t * e) { loadScreen(SCREEN_ID_ADMIN_TEST); 
 void action_load_main(lv_event_t * e) { loadScreen(SCREEN_ID_MAIN_SCREEN); }
 
 
+static uint32_t corner_touch_start = 0;
+static bool corner_touching = false;
+
 static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   uint16_t touch_x = 0, touch_y = 0;
   if (XPT2046_GetTouch(&touch_x, &touch_y)) {
     data->state = LV_INDEV_STATE_PRESSED;
     data->point.x = touch_x;
     data->point.y = touch_y;
+    
+    if (touch_x > 400 && touch_y > 260 && lv_scr_act() == objects.main_screen) {
+        if (!corner_touching) {
+            corner_touching = true;
+            corner_touch_start = HAL_GetTick();
+        } else {
+            if (HAL_GetTick() - corner_touch_start >= 3000) {
+                if (objects.textarea_input_password != NULL) {
+                    lv_textarea_set_text(objects.textarea_input_password, "");
+                }
+                loadScreen(SCREEN_ID_ADMIN_PASSWORD);
+                corner_touching = false;
+            }
+        }
+    } else {
+        corner_touching = false;
+    }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
+    corner_touching = false;
   }
 }
 
@@ -278,12 +381,9 @@ void App_DrawMainUI(void) {
  */
 void App_RFIDProcess(void) {
 	static uint32_t last_scan_time = 0;
-	static uint32_t last_card_seen = 0;
-	static uint8_t prev_uid[10] = {0};
-	static uint8_t prev_uid_len = 0;
 
-	// Jalankan pembacaan setiap 80 ms
-	if (HAL_GetTick() - last_scan_time < 80) {
+	// Jalankan pembacaan setiap 100 ms
+	if (HAL_GetTick() - last_scan_time < 100) {
 		return;
 	}
 	last_scan_time = HAL_GetTick();
@@ -292,86 +392,30 @@ void App_RFIDProcess(void) {
 	if (!g_clrc663_ready) {
 		if (CLRC663_Init(&hspi3) == CLRC663_OK) {
 			g_clrc663_ready = true;
-			g_clrc663_version = CLRC663_ReadVersion();
-			char ver_buf[20];
-			snprintf(ver_buf, sizeof(ver_buf), "[READY v0x%02X]", g_clrc663_version);
-			ILI9488_WriteString(320, 54, ver_buf, Font_7x10, ILI9488_GREEN, COLOR_CARD_HERO);
 		}
 		return;
 	}
 
 	CLRC663_Card_t card;
 	if (CLRC663_ReadCard(&card)) {
-		last_card_seen = HAL_GetTick();
-
-		// Periksa apakah ini kartu baru atau UID berbeda
-		bool is_new_card = false;
-		if (!g_card_active || prev_uid_len != card.uid_len ||
-			memcmp(prev_uid, card.uid, card.uid_len) != 0) {
-			is_new_card = true;
-			memcpy(prev_uid, card.uid, card.uid_len);
-			prev_uid_len = card.uid_len;
-			g_card_read_count++;
-		}
-
-		if (is_new_card || !g_card_active) {
+		if (!g_card_active) {
 			g_card_active = true;
 			HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-
-			// Berikan highlight bingkai Hijau Neon saat kartu terdeteksi
-			ILI9488_DrawRectangle(15, 44, 450, 130, ILI9488_GREENYELLOW);
-
-			// Tampilkan status terdeteksi
-			ILI9488_WriteString(25, 78, "Status  : KARTU TERDETEKSI!                  ",
-					Font_7x10, ILI9488_GREENYELLOW, COLOR_CARD_HERO);
-
-			// Format UID ke string Hex
-			char uid_str[48] = "UID: ";
-			for (uint8_t i = 0; i < card.uid_len; i++) {
-				char byte_buf[6];
-				snprintf(byte_buf, sizeof(byte_buf), "%02X ", card.uid[i]);
-				strcat(uid_str, byte_buf);
+			
+			// Send to ESP32
+			char msg[64];
+			if (card.uid_len >= 4) {
+			    snprintf(msg, sizeof(msg), "RFID:%02X%02X%02X%02X\n", 
+			             card.uid[0], card.uid[1], card.uid[2], card.uid[3]);
+			} else {
+			    snprintf(msg, sizeof(msg), "RFID:UNKNOWN\n");
 			}
-			size_t len = strlen(uid_str);
-			while (len < 26) {
-				uid_str[len++] = ' ';
-			}
-			uid_str[len] = '\0';
-
-			ILI9488_WriteStringScaled(25, 96, uid_str, Font_7x10,
-					ILI9488_GREEN, COLOR_CARD_HERO, 2);
-
-			// Tampilkan tipe kartu
-			char type_buf[48];
-			snprintf(type_buf, sizeof(type_buf), "Tipe    : %-32s", card.type_name);
-			ILI9488_WriteString(25, 126, type_buf, Font_7x10,
-					ILI9488_WHITE, COLOR_CARD_HERO);
-
-			// Tampilkan rincian ATQA, SAK, dan counter pembacaan
-			char info_buf[64];
-			snprintf(info_buf, sizeof(info_buf), "Baca    : %lu kali | ATQA: 0x%04X | SAK: 0x%02X    ",
-					(unsigned long)g_card_read_count, card.atqa, card.sak);
-			ILI9488_WriteString(25, 146, info_buf, Font_7x10,
-					ILI9488_CYAN, COLOR_CARD_HERO);
+			HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
 		}
 	} else {
-		// Jika kartu sudah diangkat setelah delay 400ms, kembalikan ke status siap
-		if (g_card_active && (HAL_GetTick() - last_card_seen > 400)) {
+		if (g_card_active) {
 			g_card_active = false;
-			prev_uid_len = 0;
-			memset(prev_uid, 0, sizeof(prev_uid));
 			HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
-
-			// Kembalikan bingkai ke Cyan
-			ILI9488_DrawRectangle(15, 44, 450, 130, ILI9488_CYAN);
-
-			// Kembalikan teks status
-			ILI9488_WriteString(25, 78, "Status  : Dekatkan Kartu RFID (ISO14443A)...",
-					Font_7x10, ILI9488_YELLOW, COLOR_CARD_HERO);
-			ILI9488_WriteStringScaled(25, 96, "UID: -- -- -- --          ", Font_7x10,
-					ILI9488_WHITE, COLOR_CARD_HERO, 2);
-			ILI9488_WriteString(25, 126, "Tipe    : - (Menunggu kartu...)               ",
-					Font_7x10, ILI9488_LIGHTGREY, COLOR_CARD_HERO);
 		}
 	}
 }
@@ -499,8 +543,17 @@ int main(void)
   MX_TIM14_Init();
   /* USER CODE BEGIN 2 */
 	// 1. Nyalakan Backlight Layar via PWM TIM3 Channel 3 (PB0) ~75% brightness
-	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 49152);
+	
+	// 1. Nyalakan Backlight Layar (Force HIGH as GPIO)
+	HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = GPIO_PIN_0;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+
 
 	// 2. Inisialisasi Layar TFT ILI9488 (SPI1) dan Touch Controller XPT2046 (SPI2)
 	ILI9488_Init();
@@ -541,6 +594,12 @@ int main(void)
 
 	// Initialize EEZ Studio UI
 	ui_init();
+	
+	// Start RTC update timer (Update setiap 1 detik)
+	lv_timer_create(rtc_update_timer_cb, 1000, NULL);
+	
+	// Start receiving UART from ESP32
+	HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -558,7 +617,7 @@ int main(void)
 		MX_USB_HOST_Process();
 
 		// 1. Proses pembacaan kartu RFID CLRC66303 (SPI3)
-		// App_RFIDProcess();
+		App_RFIDProcess();
 
 		// 2. Proses pembacaan sentuhan layar XPT2046 (SPI2)
 		// App_TouchProcess();
@@ -570,6 +629,63 @@ int main(void)
 				HAL_GPIO_TogglePin(USER_LED_GPIO_Port, USER_LED_Pin);
 			}
 		}
+		
+		// 4. Process UART Rx
+		if (uart1_rx_ready) {
+            if (strncmp(uart1_rx_buf, "GRANTED:", 8) == 0) {
+                char *data = uart1_rx_buf + 8;
+                char *id = strtok(data, "|");
+                char *name = strtok(NULL, "|");
+                char *pos = strtok(NULL, "|");
+                
+                loadScreen(SCREEN_ID_ACCESS_ACCEPTED);
+                if (objects.label_acc_name && lv_obj_is_valid(objects.label_acc_name)) {
+                    if (name) {
+                        lv_label_set_text(objects.label_acc_name, name);
+                    } else {
+                        lv_label_set_text(objects.label_acc_name, "Akses Diterima");
+                    }
+                }
+                
+                if (return_main_timer != NULL) {
+                    lv_timer_delete(return_main_timer);
+                }
+                return_main_timer = lv_timer_create(return_main_cb, 3000, NULL);
+                lv_timer_set_repeat_count(return_main_timer, 1);
+            } 
+            else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0) {
+                char *reason = uart1_rx_buf + 7;
+                loadScreen(SCREEN_ID_ACCESS_REJECTED);
+                if (objects.label_rej_reason && lv_obj_is_valid(objects.label_rej_reason)) {
+                    lv_label_set_text(objects.label_rej_reason, reason);
+                }
+                
+                if (return_main_timer != NULL) {
+                    lv_timer_delete(return_main_timer);
+                }
+                return_main_timer = lv_timer_create(return_main_cb, 3000, NULL);
+                lv_timer_set_repeat_count(return_main_timer, 1);
+            }
+            else if (strncmp(uart1_rx_buf, "TIME:", 5) == 0) {
+                int year, month, day, hour, min, sec;
+                if (sscanf(uart1_rx_buf + 5, "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+                    RTC_TimeTypeDef sTime = {0};
+                    RTC_DateTypeDef sDate = {0};
+                    sTime.Hours = hour;
+                    sTime.Minutes = min;
+                    sTime.Seconds = sec;
+                    sDate.Year = year % 100;
+                    sDate.Month = month;
+                    sDate.Date = day;
+                    HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+                    HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+                }
+            }
+            
+            uart1_rx_idx = 0;
+            uart1_rx_ready = 0;
+            HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1); // Resume receiving
+        }
     /* USER CODE END WHILE */
     MX_USB_HOST_Process();
 
@@ -828,7 +944,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;

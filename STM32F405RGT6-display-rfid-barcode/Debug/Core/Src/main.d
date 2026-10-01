@@ -491,7 +491,19 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Core/Src/../Inc/../Src/lvgl/lv_api_map_v9_2.h \
  ../Core/Src/../Inc/../Src/lvgl/lv_api_map_v9_3.h \
  ../Core/Src/../Inc/../Src/lvgl/lv_api_map_v9_4.h ../Core/Src/eez/ui.h \
- ../Core/Inc/lvgl.h ../Core/Src/eez/screens.h
+ ../Core/Inc/lvgl.h ../Core/Src/eez/screens.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_core.h \
+ ../USB_HOST/Target/usbh_conf.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_def.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_ioreq.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_core.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_pipes.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_ctlreq.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid_mouse.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid_keybd.h \
+ ../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid_keybd.h
 ../Core/Inc/main.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:
 ../Core/Inc/stm32f4xx_hal_conf.h:
@@ -1000,3 +1012,15 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Src/eez/ui.h:
 ../Core/Inc/lvgl.h:
 ../Core/Src/eez/screens.h:
+../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_core.h:
+../USB_HOST/Target/usbh_conf.h:
+../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_def.h:
+../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_ioreq.h:
+../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_core.h:
+../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_pipes.h:
+../Middlewares/ST/STM32_USB_Host_Library/Core/Inc/usbh_ctlreq.h:
+../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid.h:
+../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid_mouse.h:
+../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid.h:
+../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid_keybd.h:
+../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc/usbh_hid_keybd.h:
