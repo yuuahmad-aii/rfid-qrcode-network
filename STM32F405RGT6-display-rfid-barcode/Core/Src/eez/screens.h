@@ -21,7 +21,8 @@ enum ScreensEnum {
     SCREEN_ID_ADMIN_HISTORY = 8,
     SCREEN_ID_ADMIN_SETTINGS = 9,
     SCREEN_ID_ADMIN_TEST = 10,
-    _SCREEN_ID_LAST = 10
+    SCREEN_ID_SIMPLE_KEYBOARD = 11,
+    _SCREEN_ID_LAST = 11
 };
 
 typedef struct _objects_t {
@@ -35,6 +36,7 @@ typedef struct _objects_t {
     lv_obj_t *admin_history;
     lv_obj_t *admin_settings;
     lv_obj_t *admin_test;
+    lv_obj_t *simple_keyboard;
     lv_obj_t *obj0;
     lv_obj_t *obj1;
     lv_obj_t *obj2;
@@ -117,14 +119,15 @@ typedef struct _objects_t {
     lv_obj_t *obj56;
     lv_obj_t *inp_ip;
     lv_obj_t *obj57;
-    lv_obj_t *inp_ntp;
     lv_obj_t *obj58;
-    lv_obj_t *slider_relay;
-    lv_obj_t *lbl_relay_val;
     lv_obj_t *btn_settings_save;
     lv_obj_t *obj59;
+    lv_obj_t *btn_settings_save_1;
     lv_obj_t *obj60;
     lv_obj_t *obj61;
+    lv_obj_t *slider_relay_1;
+    lv_obj_t *slider_relay;
+    lv_obj_t *slider_brightness;
     lv_obj_t *obj62;
     lv_obj_t *obj63;
     lv_obj_t *obj64;
@@ -134,12 +137,16 @@ typedef struct _objects_t {
     lv_obj_t *obj68;
     lv_obj_t *obj69;
     lv_obj_t *obj70;
+    lv_obj_t *obj71;
+    lv_obj_t *obj72;
     lv_obj_t *btn_test_relay;
     lv_obj_t *lbl_test_relay;
     lv_obj_t *btn_test_camera;
     lv_obj_t *lbl_test_camera;
     lv_obj_t *btn_test_rfid;
     lv_obj_t *lbl_test_rfid;
+    lv_obj_t *obj73;
+    lv_obj_t *textarea_input_password_1;
 } objects_t;
 
 extern objects_t objects;
@@ -173,6 +180,9 @@ void tick_screen_admin_settings();
 
 void create_screen_admin_test();
 void tick_screen_admin_test();
+
+void create_screen_simple_keyboard();
+void tick_screen_simple_keyboard();
 
 void tick_screen_by_id(enum ScreensEnum screenId);
 void tick_screen(int screen_index);

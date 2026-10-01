@@ -79,7 +79,6 @@ TIM_HandleTypeDef htim14;
 
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
-UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart1_tx;
 
@@ -98,7 +97,6 @@ static void MX_SPI2_Init(void);
 static void MX_SPI3_Init(void);
 static void MX_UART4_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_USART2_UART_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_RTC_Init(void);
 static void MX_ADC1_Init(void);
@@ -129,6 +127,12 @@ char uart1_rx_buf[256];
 uint16_t uart1_rx_idx = 0;
 volatile uint8_t uart1_rx_ready = 0;
 
+volatile uint32_t last_activity_time = 0;
+volatile bool door_is_open = false;
+volatile uint32_t door_open_time = 0;
+int door_duration_s = 5;
+int standby_duration_m = 5;
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
         if (uart1_rx_data == '\n' || uart1_rx_data == '\r') {
@@ -144,6 +148,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         if (!uart1_rx_ready) {
             HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
         }
+        last_activity_time = HAL_GetTick(); // Wake up on UART
     }
 }
 
@@ -277,6 +282,7 @@ static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     data->state = LV_INDEV_STATE_PRESSED;
     data->point.x = touch_x;
     data->point.y = touch_y;
+    last_activity_time = HAL_GetTick();
     
     if (touch_x > 400 && touch_y > 260 && lv_scr_act() == objects.main_screen) {
         if (!corner_touching) {
@@ -401,6 +407,7 @@ void App_RFIDProcess(void) {
 		if (!g_card_active) {
 			g_card_active = true;
 			HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+			last_activity_time = HAL_GetTick();
 			
 			// Send to ESP32
 			char msg[64];
@@ -493,8 +500,68 @@ void App_TouchProcess(void) {
 			ILI9488_WriteString(25, 216, "Status  : Menunggu Sentuhan...",
 					Font_7x10, ILI9488_WHITE, COLOR_CARD_TOUCH);
 		}
-	}
+		}
 }
+
+static void btn_settings_save_cb(lv_event_t *e) {
+    const char *ssid = lv_textarea_get_text(objects.inp_ssid);
+    const char *pass = lv_textarea_get_text(objects.inp_pass);
+    const char *ip = lv_textarea_get_text(objects.inp_ip);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "WIFI:%s|%s|%s\n", ssid, pass, ip);
+    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+}
+
+static void btn_settings_save_1_cb(lv_event_t *e) {
+    char msg[] = "CMD:SYNC_TIME\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+}
+
+static void slider_brightness_cb(lv_event_t *e) {
+    lv_obj_t *slider = lv_event_get_target(e);
+    int val = lv_slider_get_value(slider);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, (uint32_t)(val * 65535 / 100));
+    last_activity_time = HAL_GetTick();
+}
+
+static void slider_relay_cb(lv_event_t *e) {
+    lv_obj_t *slider = lv_event_get_target(e);
+    door_duration_s = lv_slider_get_value(slider);
+    last_activity_time = HAL_GetTick();
+}
+
+static void slider_relay_1_cb(lv_event_t *e) {
+    lv_obj_t *slider = lv_event_get_target(e);
+    standby_duration_m = lv_slider_get_value(slider);
+    last_activity_time = HAL_GetTick();
+}
+
+static lv_obj_t * kb = NULL;
+static void ta_event_cb(lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * ta = lv_event_get_target(e);
+    if(code == LV_EVENT_FOCUSED) {
+        if(kb == NULL) {
+            kb = lv_keyboard_create(lv_scr_act());
+            lv_obj_set_size(kb, 480, 160);
+            lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+        } else if (lv_obj_get_parent(kb) != lv_scr_act()) {
+            lv_obj_set_parent(kb, lv_scr_act());
+        }
+        lv_keyboard_set_textarea(kb, ta);
+        lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(kb);
+    }
+    if(code == LV_EVENT_DEFOCUSED || code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        if(kb != NULL) {
+            lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+        }
+        if(code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+            lv_obj_remove_state(ta, LV_STATE_FOCUSED);
+        }
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -534,7 +601,6 @@ int main(void)
   MX_SPI3_Init();
   MX_UART4_Init();
   MX_USART1_UART_Init();
-  MX_USART2_UART_Init();
   MX_USB_HOST_Init();
   MX_TIM3_Init();
   MX_FATFS_Init();
@@ -595,6 +661,29 @@ int main(void)
 	// Initialize EEZ Studio UI
 	ui_init();
 	
+	// Add custom events for settings
+	if (objects.btn_settings_save) {
+	    lv_obj_add_event_cb(objects.btn_settings_save, btn_settings_save_cb, LV_EVENT_CLICKED, NULL);
+	}
+	if (objects.btn_settings_save_1) {
+	    lv_obj_add_event_cb(objects.btn_settings_save_1, btn_settings_save_1_cb, LV_EVENT_CLICKED, NULL);
+	}
+	if (objects.slider_brightness) {
+	    lv_obj_add_event_cb(objects.slider_brightness, slider_brightness_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	}
+	if (objects.slider_relay) {
+	    lv_obj_add_event_cb(objects.slider_relay, slider_relay_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	}
+	if (objects.slider_relay_1) {
+	    lv_obj_add_event_cb(objects.slider_relay_1, slider_relay_1_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	}
+	
+	// QWERTY keyboard for text inputs instead of 12-button simple_keyboard
+	if (objects.inp_ssid) lv_obj_add_event_cb(objects.inp_ssid, ta_event_cb, LV_EVENT_ALL, NULL);
+	if (objects.inp_pass) lv_obj_add_event_cb(objects.inp_pass, ta_event_cb, LV_EVENT_ALL, NULL);
+	if (objects.inp_ip) lv_obj_add_event_cb(objects.inp_ip, ta_event_cb, LV_EVENT_ALL, NULL);
+
+	
 	// Start RTC update timer (Update setiap 1 detik)
 	lv_timer_create(rtc_update_timer_cb, 1000, NULL);
 	
@@ -631,7 +720,7 @@ int main(void)
 		}
 		
 		// 4. Process UART Rx
-		if (uart1_rx_ready) {
+        if (uart1_rx_ready) {
             if (strncmp(uart1_rx_buf, "GRANTED:", 8) == 0) {
                 char *data = uart1_rx_buf + 8;
                 char *id = strtok(data, "|");
@@ -647,14 +736,22 @@ int main(void)
                     }
                 }
                 
+                // Open door
+                HAL_GPIO_WritePin(GPIOA, USER_OUTPUT2_Pin, GPIO_PIN_SET);
+                door_open_time = HAL_GetTick();
+                door_is_open = true;
+                
                 if (return_main_timer != NULL) {
                     lv_timer_delete(return_main_timer);
                 }
                 return_main_timer = lv_timer_create(return_main_cb, 3000, NULL);
                 lv_timer_set_repeat_count(return_main_timer, 1);
             } 
-            else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0) {
-                char *reason = uart1_rx_buf + 7;
+            else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0 || strncmp(uart1_rx_buf, "TIME_ERR:", 9) == 0) {
+                char *reason;
+                if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0) reason = uart1_rx_buf + 7;
+                else reason = uart1_rx_buf + 9;
+                
                 loadScreen(SCREEN_ID_ACCESS_REJECTED);
                 if (objects.label_rej_reason && lv_obj_is_valid(objects.label_rej_reason)) {
                     lv_label_set_text(objects.label_rej_reason, reason);
@@ -685,6 +782,24 @@ int main(void)
             uart1_rx_idx = 0;
             uart1_rx_ready = 0;
             HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1); // Resume receiving
+        }
+        
+        // Handle Door Lock Timer
+        if (door_is_open && (HAL_GetTick() - door_open_time > (door_duration_s * 1000))) {
+            HAL_GPIO_WritePin(GPIOA, USER_OUTPUT2_Pin, GPIO_PIN_RESET);
+            door_is_open = false;
+        }
+        
+        // Handle Standby Display
+        if (HAL_GetTick() - last_activity_time > (standby_duration_m * 60000)) {
+            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 0); // Turn off backlight
+        } else {
+            if (__HAL_TIM_GET_COMPARE(&htim3, TIM_CHANNEL_3) == 0) {
+                // Wake up
+                int val = 25;
+                if (objects.slider_brightness) val = lv_slider_get_value(objects.slider_brightness);
+                __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, (uint32_t)(val * 65535 / 100));
+            }
         }
     /* USER CODE END WHILE */
     MX_USB_HOST_Process();
@@ -1182,39 +1297,6 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -1275,7 +1357,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, USER_OUTPUT1_Pin|USER_OUTPUT2_Pin|SPI1_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, SPI1_RST_Pin|SPI1_DC_Pin|USB_POWER_Pin, GPIO_PIN_RESET);
@@ -1283,12 +1365,12 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, USER_LED_Pin|SPI2_CS_Pin|SPI3_CS_Pin|SPI3_RST_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : SPI1_CS_Pin */
-  GPIO_InitStruct.Pin = SPI1_CS_Pin;
+  /*Configure GPIO pins : USER_OUTPUT1_Pin USER_OUTPUT2_Pin SPI1_CS_Pin */
+  GPIO_InitStruct.Pin = USER_OUTPUT1_Pin|USER_OUTPUT2_Pin|SPI1_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(SPI1_CS_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI1_RST_Pin SPI1_DC_Pin USB_POWER_Pin */
   GPIO_InitStruct.Pin = SPI1_RST_Pin|SPI1_DC_Pin|USB_POWER_Pin;

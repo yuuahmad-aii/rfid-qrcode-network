@@ -17,6 +17,8 @@
 #include <time.h>
 #include "esp_netif_sntp.h"
 #include "cJSON.h"
+#include "lwip/inet.h"
+#include "lwip/ip4_addr.h"
 
 /* WIFI AND API CONFIGURATION - CHANGE THESE! */
 #define WIFI_SSID "YOUR_WIFI_SSID"
@@ -125,7 +127,7 @@ void wifi_init_sta(void) {
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_create_default_wifi_sta();
+  esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -137,14 +139,46 @@ void wifi_init_sta(void) {
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &instance_got_ip));
 
+  char ssid[32] = WIFI_SSID;
+  char pass[64] = WIFI_PASS;
+  char ip[16] = "";
+
+  nvs_handle_t my_handle;
+  if (nvs_open("storage", NVS_READONLY, &my_handle) == ESP_OK) {
+      size_t len = sizeof(ssid);
+      nvs_get_str(my_handle, "ssid", ssid, &len);
+      len = sizeof(pass);
+      nvs_get_str(my_handle, "pass", pass, &len);
+      len = sizeof(ip);
+      nvs_get_str(my_handle, "ip", ip, &len);
+      nvs_close(my_handle);
+  }
+
+  if (strlen(ip) > 0) {
+      esp_netif_dhcpc_stop(sta_netif);
+      esp_netif_ip_info_t ip_info;
+      ip4addr_aton(ip, (ip4_addr_t *)&ip_info.ip);
+      
+      char gw_str[16];
+      strncpy(gw_str, ip, sizeof(gw_str));
+      char *last_dot = strrchr(gw_str, '.');
+      if (last_dot) {
+          strcpy(last_dot + 1, "1");
+      }
+      ip4addr_aton(gw_str, (ip4_addr_t *)&ip_info.gw);
+      ip4addr_aton("255.255.255.0", (ip4_addr_t *)&ip_info.netmask);
+      
+      esp_netif_set_ip_info(sta_netif, &ip_info);
+  }
+
   wifi_config_t wifi_config = {
-      .sta =
-          {
-              .ssid = WIFI_SSID,
-              .password = WIFI_PASS,
+      .sta = {
               .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-          },
+      },
   };
+  strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+  strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password));
+
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
@@ -431,7 +465,7 @@ static void uart_task(void *pvParameters) {
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
   uint8_t *data = (uint8_t *)malloc(BUF_SIZE);
-  char rfid_str[32];
+  char rfid_str[256];
   int rfid_idx = 0;
 
   while (1) {
@@ -451,6 +485,25 @@ static void uart_task(void *pvParameters) {
               send_api_request(rfid_str + 8, "qr");
             } else if (strncmp(rfid_str, "CMD:SYNC_TIME", 13) == 0) {
               xSemaphoreGive(sync_time_sem);
+            } else if (strncmp(rfid_str, "WIFI:", 5) == 0) {
+              char *data = rfid_str + 5;
+              char *ssid = strtok(data, "|");
+              char *pass = strtok(NULL, "|");
+              char *ip = strtok(NULL, "|");
+              if (ssid && pass && ip) {
+                  nvs_handle_t my_handle;
+                  ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &my_handle));
+                  nvs_set_str(my_handle, "ssid", ssid);
+                  nvs_set_str(my_handle, "pass", pass);
+                  nvs_set_str(my_handle, "ip", ip);
+                  nvs_commit(my_handle);
+                  nvs_close(my_handle);
+                  
+                  ESP_LOGI(TAG, "WiFi config saved. Restarting...");
+                  uart_send_and_log("WIFI_SAVED\n");
+                  vTaskDelay(pdMS_TO_TICKS(1000));
+                  esp_restart();
+              }
             }
             rfid_idx = 0;
           }

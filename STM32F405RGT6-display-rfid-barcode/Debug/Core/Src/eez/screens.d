@@ -1,5 +1,5 @@
 Core/Src/eez/screens.o: ../Core/Src/eez/screens.c \
- ../Core/Src/eez/actions.h ../Core/Inc/lvgl.h ../Core/Inc/lv_version.h \
+ ../Core/Src/eez/screens.h ../Core/Inc/lvgl.h ../Core/Inc/lv_version.h \
  ../Core/Inc/../Src/lvgl/lv_init.h \
  ../Core/Inc/../Src/lvgl/lv_conf_internal.h \
  ../Core/Inc/../Src/lvgl/lv_conf_kconfig.h ../Core/Inc/lv_conf.h \
@@ -442,10 +442,10 @@ Core/Src/eez/screens.o: ../Core/Src/eez/screens.c \
  ../Core/Inc/../Src/lvgl/lv_api_map_v9_1.h \
  ../Core/Inc/../Src/lvgl/lv_api_map_v9_2.h \
  ../Core/Inc/../Src/lvgl/lv_api_map_v9_3.h \
- ../Core/Inc/../Src/lvgl/lv_api_map_v9_4.h ../Core/Src/eez/fonts.h \
- ../Core/Src/eez/images.h ../Core/Src/eez/screens.h \
- ../Core/Src/eez/styles.h ../Core/Src/eez/ui.h ../Core/Src/eez/vars.h
-../Core/Src/eez/actions.h:
+ ../Core/Inc/../Src/lvgl/lv_api_map_v9_4.h ../Core/Src/eez/images.h \
+ ../Core/Src/eez/fonts.h ../Core/Src/eez/actions.h ../Core/Src/eez/vars.h \
+ ../Core/Src/eez/styles.h ../Core/Src/eez/ui.h
+../Core/Src/eez/screens.h:
 ../Core/Inc/lvgl.h:
 ../Core/Inc/lv_version.h:
 ../Core/Inc/../Src/lvgl/lv_init.h:
@@ -892,9 +892,9 @@ Core/Src/eez/screens.o: ../Core/Src/eez/screens.c \
 ../Core/Inc/../Src/lvgl/lv_api_map_v9_2.h:
 ../Core/Inc/../Src/lvgl/lv_api_map_v9_3.h:
 ../Core/Inc/../Src/lvgl/lv_api_map_v9_4.h:
-../Core/Src/eez/fonts.h:
 ../Core/Src/eez/images.h:
-../Core/Src/eez/screens.h:
+../Core/Src/eez/fonts.h:
+../Core/Src/eez/actions.h:
+../Core/Src/eez/vars.h:
 ../Core/Src/eez/styles.h:
 ../Core/Src/eez/ui.h:
-../Core/Src/eez/vars.h:

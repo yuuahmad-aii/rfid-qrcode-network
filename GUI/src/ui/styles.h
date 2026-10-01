@@ -68,6 +68,13 @@ lv_style_t *get_style_button_seg_MAIN_CHECKED();
 void add_style_button_seg(lv_obj_t *obj);
 void remove_style_button_seg(lv_obj_t *obj);
 
+// Style: ButtonWarning
+lv_style_t *get_style_button_warning_MAIN_DEFAULT();
+lv_style_t *get_style_button_warning_MAIN_PRESSED();
+lv_style_t *get_style_button_warning_MAIN_CHECKED();
+void add_style_button_warning(lv_obj_t *obj);
+void remove_style_button_warning(lv_obj_t *obj);
+
 // Style: ButtonPill
 lv_style_t *get_style_button_pill_MAIN_DEFAULT();
 lv_style_t *get_style_button_pill_MAIN_PRESSED();
