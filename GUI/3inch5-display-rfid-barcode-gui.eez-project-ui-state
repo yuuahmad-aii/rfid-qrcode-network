@@ -1,6 +1,6 @@
 {
   "navigation": {
-    "selectedUserPageObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/0",
+    "selectedUserPageObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/4",
     "selectedActionObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/actions/11",
     "selectedThemeObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/themes/0",
     "subnavigationSelectedItems": {
@@ -193,17 +193,16 @@
               "type": "tabset",
               "id": "EDITORS",
               "weight": 41.9887144417656,
-              "selected": 3,
               "enableDeleteWhenEmpty": false,
               "enableClose": false,
               "children": [
                 {
                   "type": "tab",
                   "id": "#609b4010-76c5-4113-a929-ea58b1f01726",
-                  "name": "Admin_Settings",
+                  "name": "Admin_Users",
                   "component": "editor",
                   "config": {
-                    "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/6",
+                    "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/4",
                     "permanent": false
                   },
                   "icon": "svg:page"
@@ -223,7 +222,7 @@
                 {
                   "type": "tab",
                   "id": "#3afa37a3-6036-434a-b9ea-7d3246a0fab2",
-                  "name": "Admin_Users",
+                  "name": "Admin_Settings",
                   "component": "editor",
                   "config": {
                     "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/6",
@@ -1209,8 +1208,8 @@
       },
       "transform": {
         "translate": {
-          "x": -442.15281385281384,
-          "y": -201.23151515151517
+          "x": -280.15281385281384,
+          "y": -190.23151515151517
         },
         "scale": 1.25
       },

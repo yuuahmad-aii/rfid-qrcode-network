@@ -795,16 +795,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SPI2_IRQ_Pin */
+  /*Configure GPIO pin : SPI2_IRQ_Pin (Active-Low Touch PENIRQ dengan internal Pull-Up) */
   GPIO_InitStruct.Pin = SPI2_IRQ_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(SPI2_IRQ_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SDIO_DET_Pin */
+  /*Configure GPIO pin : SDIO_DET_Pin (MicroSD Card Detect dengan internal Pull-Up) */
   GPIO_InitStruct.Pin = SDIO_DET_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(SDIO_DET_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : SPI3_IRQ_Pin */
@@ -832,8 +832,8 @@ static void MX_GPIO_Init(void)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  /* RFID IRQ: PA15 (SPI3_IRQ) atau PA8 */
-  if (GPIO_Pin == SPI3_IRQ_Pin || GPIO_Pin == GPIO_PIN_8)
+  /* RFID IRQ: PA15 (SPI3_IRQ) */
+  if (GPIO_Pin == SPI3_IRQ_Pin)
   {
     if (Task_RFIDHandle != NULL)
     {
@@ -1290,17 +1290,103 @@ void StartGuiTask(void *argument)
     if (GUI_Attendance_IsSleeping())
     {
       /* Saat layar dalam mode sleep:
-         - Matikan update jam & badge agar CPU tidak membebani bus & hemat daya
-         - Delay lebih panjang (50 ms) untuk mengistirahatkan MCU */
-      osDelay(50);
+       * - Tunggu interupsi sentuh dari XPT2046 (/PENIRQ jatuh ke LOW via EXTI) atau timeout 50ms
+       * - Bangunkan layar segera bila disentuh */
+      if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50)) > 0 || XPT2046_IsTouched())
+      {
+        GUI_Attendance_Wakeup();
+        lv_timer_handler();
+      }
+      else
+      {
+        /* Deteksi jika MicroSD tiba-tiba dicabut saat layar dalam mode sleep */
+        if (g_sd_mounted && (HAL_GPIO_ReadPin(SDIO_DET_GPIO_Port, SDIO_DET_Pin) != GPIO_PIN_RESET))
+        {
+          g_sd_mounted = false;
+          if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK)
+          {
+            f_mount(NULL, (TCHAR const*)SDPath, 0);
+            osMutexRelease(sdioFatFsMutexHandle);
+          }
+          GUI_Attendance_Wakeup();
+          GUI_Attendance_ShowSDWarning(true);
+          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+          osDelay(80);
+          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+        }
+      }
     }
     else
     {
-      /* Saat layar aktif: perbarui jam digital & badge peripheral setiap 500 ms */
+      /* Saat layar aktif: perbarui jam digital, status MicroSD & badge peripheral setiap 500 ms */
       uint32_t now = HAL_GetTick();
       if (now - last_clock_tick >= 500)
       {
         last_clock_tick = now;
+
+        /* Deteksi status fisik kartu MicroSD secara real-time */
+        bool sd_phys_present = (HAL_GPIO_ReadPin(SDIO_DET_GPIO_Port, SDIO_DET_Pin) == GPIO_PIN_RESET);
+
+        if (g_sd_mounted)
+        {
+          /* Kartu sebelumnya tercatat terpasang: verifikasi apakah dicabut */
+          bool card_removed = !sd_phys_present;
+          if (!card_removed)
+          {
+            if (osMutexAcquire(sdioFatFsMutexHandle, 20) == osOK)
+            {
+              HAL_SD_CardStateTypeDef cstate = HAL_SD_GetCardState(&hsd);
+              osMutexRelease(sdioFatFsMutexHandle);
+              if (cstate == HAL_SD_CARD_ERROR)
+              {
+                card_removed = true;
+              }
+            }
+          }
+
+          if (card_removed)
+          {
+            /* MicroSD DICABUT saat sedang beroperasi! */
+            g_sd_mounted = false;
+            if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK)
+            {
+              f_mount(NULL, (TCHAR const*)SDPath, 0);
+              osMutexRelease(sdioFatFsMutexHandle);
+            }
+            GUI_Attendance_ShowSDWarning(true);
+
+            /* Alarm buzzer 2x beep tanda peringatan MicroSD dicabut */
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+            osDelay(60);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+            osDelay(40);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+            osDelay(60);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+          }
+        }
+        else
+        {
+          /* Kartu sebelumnya belum terpasang: cek apakah baru dimasukkan kembali */
+          if (sd_phys_present)
+          {
+            if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK)
+            {
+              if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK)
+              {
+                g_sd_mounted = true;
+                GUI_Attendance_ShowSDWarning(false);
+
+                /* Nada konfirmasi 1x beep tanda MicroSD terpasang kembali */
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+                osDelay(60);
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+              }
+              osMutexRelease(sdioFatFsMutexHandle);
+            }
+          }
+        }
+
         RTC_TimeTypeDef sTime = {0};
         RTC_DateTypeDef sDate = {0};
         HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
@@ -1450,6 +1536,15 @@ void StartEsp32Task(void *argument)
       }
       else if (strncmp(uart1_rx_buf, "WIFI:FAIL", 9) == 0)
       {
+        g_wifi_connected = false;
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_WIFI_STATUS;
+        ui_evt.status = 0;
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+      }
+      else if (strncmp(uart1_rx_buf, "WIFI_SAVED", 10) == 0)
+      {
+        /* ESP32 berhasil menyimpan Wi-Fi baru ke NVS dan sedang restart */
         g_wifi_connected = false;
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;

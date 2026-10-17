@@ -130,6 +130,7 @@ static lv_obj_t * lbl_pass_t          = NULL;
 static lv_obj_t * ta_wifi_pass        = NULL;
 static lv_obj_t * btn_save_wifi       = NULL;
 static lv_obj_t * lbl_save_btn        = NULL;
+static lv_obj_t * lbl_wifi_feedback   = NULL;
 static lv_obj_t * kb_wifi             = NULL;
 
 /* Tab 3: Log Absensi MicroSD */
@@ -152,6 +153,9 @@ static lv_obj_t * cont_diag_box       = NULL;
 static lv_obj_t * lbl_diag_title      = NULL;
 static lv_obj_t * lbl_diag_summary    = NULL;
 static lv_obj_t * lbl_diag_detail     = NULL;
+
+/* Warning Modal Popup */
+static lv_obj_t * modal_sd_warning    = NULL;
 
 /* Timer */
 static lv_timer_t * revert_timer      = NULL;
@@ -1000,6 +1004,14 @@ static void build_screen_admin(void)
     lv_obj_set_style_text_color(lbl_save_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
     lv_obj_set_style_text_font(lbl_save_btn, &lv_font_montserrat_14, 0);
 
+    /* Label Status & Umpan Balik Wi-Fi Real-time */
+    lbl_wifi_feedback = lv_label_create(tab_wifi);
+    lv_obj_set_pos(lbl_wifi_feedback, 10, 80);
+    lv_obj_set_width(lbl_wifi_feedback, 430);
+    lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Belum Terhubung [Mencoba konek...]");
+    lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
+    lv_obj_set_style_text_font(lbl_wifi_feedback, &lv_font_montserrat_14, 0);
+
     /* Keyboard Virtual ditempatkan di lv_layer_top() dengan custom 5-baris QWERTY lengkap */
     kb_wifi = lv_keyboard_create(lv_layer_top());
     lv_obj_set_size(kb_wifi, 480, 155);
@@ -1368,6 +1380,16 @@ void GUI_Attendance_UpdateBadges(bool rfid_ok, bool wifi_ok, bool sd_ok)
         }
     }
 
+    if (lbl_wifi_feedback != NULL) {
+        if (wifi_ok) {
+            lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Terhubung ke AP [OK]");
+            lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
+        } else {
+            lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Belum Terhubung [Periksa SSID/Password]");
+            lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
+        }
+    }
+
     /* 3. MicroSD Card Status Badge Real-Time */
     if (badge_sd != NULL && lbl_badge_sd != NULL) {
         if (sd_ok) {
@@ -1493,6 +1515,78 @@ bool GUI_Attendance_IsSleeping(void)
 void GUI_Attendance_NotifyActivity(void)
 {
     g_last_activity_tick = HAL_GetTick();
+}
+
+static void btn_dismiss_sd_warning_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    if (modal_sd_warning != NULL) {
+        lv_obj_delete(modal_sd_warning);
+        modal_sd_warning = NULL;
+    }
+}
+
+/**
+  * @brief  Tampilkan atau sembunyikan popup modal peringatan MicroSD dicabut
+  */
+void GUI_Attendance_ShowSDWarning(bool show)
+{
+    if (!show) {
+        if (modal_sd_warning != NULL) {
+            lv_obj_delete(modal_sd_warning);
+            modal_sd_warning = NULL;
+        }
+        return;
+    }
+
+    /* Jangan buat popup ganda jika sudah aktif */
+    if (modal_sd_warning != NULL) return;
+
+    /* Tampilkan modal di lv_layer_top() agar selalu berada di paling depan layar */
+    modal_sd_warning = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(modal_sd_warning, 430, 165);
+    lv_obj_center(modal_sd_warning);
+    lv_obj_set_style_bg_color(modal_sd_warning, lv_color_hex(0x450A0A), 0);
+    lv_obj_set_style_border_color(modal_sd_warning, lv_color_hex(COLOR_RED_STATUS), 0);
+    lv_obj_set_style_border_width(modal_sd_warning, 2, 0);
+    lv_obj_set_style_radius(modal_sd_warning, 12, 0);
+    lv_obj_set_style_pad_all(modal_sd_warning, 10, 0);
+    lv_obj_remove_flag(modal_sd_warning, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Judul Peringatan */
+    lv_obj_t * lbl_warn_title = lv_label_create(modal_sd_warning);
+    lv_obj_set_pos(lbl_warn_title, 0, 4);
+    lv_obj_set_width(lbl_warn_title, 410);
+    lv_label_set_text(lbl_warn_title, LV_SYMBOL_WARNING " PERINGATAN: MICROSD DICABUT!");
+    lv_obj_set_style_text_align(lbl_warn_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(lbl_warn_title, lv_color_hex(0xFCA5A5), 0);
+    lv_obj_set_style_text_font(lbl_warn_title, &lv_font_montserrat_16, 0);
+
+    /* Pesan Penjelasan */
+    lv_obj_t * lbl_warn_desc = lv_label_create(modal_sd_warning);
+    lv_obj_set_pos(lbl_warn_desc, 10, 36);
+    lv_obj_set_width(lbl_warn_desc, 390);
+    lv_label_set_long_mode(lbl_warn_desc, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_text(lbl_warn_desc,
+        "Kartu MicroSD terlepas saat sistem sedang beroperasi!\n"
+        "Data riwayat kehadiran tidak dapat dicatat ke MicroSD.\n"
+        "Harap segera pasang kembali MicroSD berformat FAT32.");
+    lv_obj_set_style_text_color(lbl_warn_desc, lv_color_hex(0xFEE2E2), 0);
+    lv_obj_set_style_text_font(lbl_warn_desc, &lv_font_montserrat_14, 0);
+
+    /* Tombol Tutup */
+    lv_obj_t * btn_close_warn = lv_button_create(modal_sd_warning);
+    lv_obj_set_pos(btn_close_warn, 155, 115);
+    lv_obj_set_size(btn_close_warn, 100, 32);
+    lv_obj_set_style_bg_color(btn_close_warn, lv_color_hex(COLOR_RED_STATUS), 0);
+    lv_obj_set_style_radius(btn_close_warn, 6, 0);
+    lv_obj_add_event_cb(btn_close_warn, btn_dismiss_sd_warning_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_btn = lv_label_create(btn_close_warn);
+    lv_obj_center(lbl_btn);
+    lv_label_set_text(lbl_btn, "TUTUP");
+    lv_obj_set_style_text_color(lbl_btn, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(lbl_btn, &lv_font_montserrat_14, 0);
 }
 
 /**
@@ -1979,6 +2073,10 @@ static void btn_save_wifi_cb(lv_event_t * e)
     const char * pass = lv_textarea_get_text(ta_wifi_pass);
 
     if (strlen(ssid) == 0) {
+        if (lbl_wifi_feedback) {
+            lv_label_set_text(lbl_wifi_feedback, "Peringatan: SSID tidak boleh kosong!");
+            lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_RED_STATUS), 0);
+        }
         if (lbl_admin_feedback) {
             lv_label_set_text(lbl_admin_feedback, "Peringatan: SSID tidak boleh kosong!");
             lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_RED_STATUS), 0);
@@ -1991,9 +2089,9 @@ static void btn_save_wifi_cb(lv_event_t * e)
     strncpy(g_app_settings.wifi_pass, pass, sizeof(g_app_settings.wifi_pass) - 1);
     App_Settings_Save(&g_app_settings);
 
-    /* Kirim paket konfigurasi Wi-Fi ke ESP32-C6 via USART1 */
+    /* Kirim paket konfigurasi Wi-Fi ke ESP32-C6 via USART1 (Gunakan DHCP agar router otomatis memberikan IP) */
     esp_tx_item_t item = {0};
-    snprintf(item.payload, sizeof(item.payload), "WIFI:%s|%s|0.0.0.0\n", ssid, pass);
+    snprintf(item.payload, sizeof(item.payload), "WIFI:%s|%s|DHCP\n", ssid, pass);
     osMessageQueuePut(espTxQueueHandle, &item, 0, 50);
 
     /* Sembunyikan keyboard */
@@ -2003,6 +2101,10 @@ static void btn_save_wifi_cb(lv_event_t * e)
     osDelay(50);
     HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
 
+    if (lbl_wifi_feedback) {
+        lv_label_set_text(lbl_wifi_feedback, "Status: Konfigurasi Disimpan ke Flash & Dikirim!");
+        lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    }
     if (lbl_admin_feedback) {
         lv_label_set_text(lbl_admin_feedback, "Status: Konfigurasi Disimpan ke Flash & Dikirim!");
         lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
@@ -2030,7 +2132,11 @@ static void kb_wifi_event_cb(lv_event_t * e)
 {
     GUI_Attendance_NotifyActivity();
     lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+    if (code == LV_EVENT_READY) {
+        if (kb_wifi) lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+        /* User menekan tombol OK pada keyboard: langsung simpan dan kirim ke ESP32 */
+        btn_save_wifi_cb(NULL);
+    } else if (code == LV_EVENT_CANCEL) {
         if (kb_wifi) lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
     }
 }

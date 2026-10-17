@@ -105,20 +105,32 @@ static void configure_led(void) {
   set_led_color(16, 0, 0);
 }
 
+static int s_wifi_retry_count = 0;
+
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    s_wifi_retry_count = 0;
     esp_wifi_connect();
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     set_led_color(16, 0, 0); // Red
-    uart_send_and_log("WIFI:FAIL\n");
+    s_wifi_retry_count++;
+    if (s_wifi_retry_count > 3) {
+      uart_send_and_log("WIFI:FAIL\n");
+    }
+    ESP_LOGW(TAG, "Wi-Fi disconnected. Retry attempt #%d...", s_wifi_retry_count);
+    vTaskDelay(pdMS_TO_TICKS(1000));
     esp_wifi_connect();
-    ESP_LOGI(TAG, "retry to connect to the AP");
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-    set_led_color(0, 0, 8); // Dim Blue (Connected, idle low power)
+    s_wifi_retry_count = 0;
+    set_led_color(0, 0, 8); // Dim Blue (Connected, idle)
+
+    /* Aktifkan Wi-Fi Modem-Sleep HANYA setelah IP berhasil diperoleh dan koneksi stabil */
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     uart_send_and_log("WIFI:OK\n");
   }
@@ -141,8 +153,8 @@ void wifi_init_sta(void) {
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &instance_got_ip));
 
-  char ssid[32] = WIFI_SSID;
-  char pass[64] = WIFI_PASS;
+  char ssid[34] = WIFI_SSID;
+  char pass[66] = WIFI_PASS;
   char ip[16] = "";
 
   nvs_handle_t my_handle;
@@ -156,26 +168,35 @@ void wifi_init_sta(void) {
       nvs_close(my_handle);
   }
 
-  if (strlen(ip) > 0) {
-      esp_netif_dhcpc_stop(sta_netif);
+  /* Hanya terapkan Static IP jika IP valid dan bukan DHCP / 0.0.0.0 */
+  if (strlen(ip) > 0 && strcmp(ip, "0.0.0.0") != 0 && strcmp(ip, "DHCP") != 0) {
       esp_netif_ip_info_t ip_info;
-      ip4addr_aton(ip, (ip4_addr_t *)&ip_info.ip);
-      
-      char gw_str[16];
-      strncpy(gw_str, ip, sizeof(gw_str));
-      char *last_dot = strrchr(gw_str, '.');
-      if (last_dot) {
-          strcpy(last_dot + 1, "1");
+      memset(&ip_info, 0, sizeof(ip_info));
+      if (ip4addr_aton(ip, (ip4_addr_t *)&ip_info.ip) && ip_info.ip.addr != 0) {
+          esp_netif_dhcpc_stop(sta_netif);
+          char gw_str[16];
+          strncpy(gw_str, ip, sizeof(gw_str));
+          char *last_dot = strrchr(gw_str, '.');
+          if (last_dot) {
+              strcpy(last_dot + 1, "1");
+          }
+          ip4addr_aton(gw_str, (ip4_addr_t *)&ip_info.gw);
+          ip4addr_aton("255.255.255.0", (ip4_addr_t *)&ip_info.netmask);
+          esp_netif_set_ip_info(sta_netif, &ip_info);
+          ESP_LOGI(TAG, "Static IP configured: %s, GW: %s", ip, gw_str);
       }
-      ip4addr_aton(gw_str, (ip4_addr_t *)&ip_info.gw);
-      ip4addr_aton("255.255.255.0", (ip4_addr_t *)&ip_info.netmask);
-      
-      esp_netif_set_ip_info(sta_netif, &ip_info);
+  } else {
+      esp_netif_dhcpc_start(sta_netif);
+      ESP_LOGI(TAG, "Using automatic DHCP for IP assignment");
   }
 
   wifi_config_t wifi_config = {
       .sta = {
-              .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+              .threshold.authmode = (strlen(pass) == 0) ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK,
+              .pmf_cfg = {
+                  .capable = true,
+                  .required = false,
+              },
       },
   };
   strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
@@ -185,12 +206,10 @@ void wifi_init_sta(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  /* Optimalisasi Hemat Daya (Power Save Mode):
-   * Aktifkan Wi-Fi Modem-Sleep sehingga radio RF tidur di sela DTIM beacon (menghemat 70-80% daya idle),
-   * namun koneksi tetap terjalin dan dapat langsung mengirim transaksi HTTP seketika kartu di-tap. */
-  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  /* Jangan aktifkan power saving modem sleep sebelum terhubung ke AP agar negosiasi DHCP lancar */
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
-  ESP_LOGI(TAG, "wifi_init_sta finished.");
+  ESP_LOGI(TAG, "wifi_init_sta started for SSID: '%s'", ssid);
 }
 
 static void IRAM_ATTR button_isr_handler(void *arg) {
@@ -513,21 +532,45 @@ static void uart_task(void *pvParameters) {
               }
             } else if (strncmp(rfid_str, "WIFI:", 5) == 0) {
               char *data = rfid_str + 5;
-              char *ssid = strtok(data, "|");
-              char *pass = strtok(NULL, "|");
-              char *ip = strtok(NULL, "|");
-              if (ssid && pass && ip) {
+              /* Bersihkan karakter newline dan carriage return */
+              char *nl = strpbrk(data, "\r\n");
+              if (nl) *nl = '\0';
+
+              char parsed_ssid[34] = {0};
+              char parsed_pass[66] = {0};
+              char parsed_ip[16] = "DHCP";
+
+              /* Parse format: WIFI:SSID|PASS|IP atau WIFI:SSID|PASS */
+              char *first_bar = strchr(data, '|');
+              if (first_bar) {
+                *first_bar = '\0';
+                strncpy(parsed_ssid, data, sizeof(parsed_ssid) - 1);
+                char *rest = first_bar + 1;
+                char *second_bar = strchr(rest, '|');
+                if (second_bar) {
+                  *second_bar = '\0';
+                  strncpy(parsed_pass, rest, sizeof(parsed_pass) - 1);
+                  strncpy(parsed_ip, second_bar + 1, sizeof(parsed_ip) - 1);
+                } else {
+                  strncpy(parsed_pass, rest, sizeof(parsed_pass) - 1);
+                }
+              } else {
+                strncpy(parsed_ssid, data, sizeof(parsed_ssid) - 1);
+              }
+
+              if (strlen(parsed_ssid) > 0) {
                   nvs_handle_t my_handle;
-                  ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &my_handle));
-                  nvs_set_str(my_handle, "ssid", ssid);
-                  nvs_set_str(my_handle, "pass", pass);
-                  nvs_set_str(my_handle, "ip", ip);
-                  nvs_commit(my_handle);
-                  nvs_close(my_handle);
-                  
-                  ESP_LOGI(TAG, "WiFi config saved. Restarting...");
+                  if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+                      nvs_set_str(my_handle, "ssid", parsed_ssid);
+                      nvs_set_str(my_handle, "pass", parsed_pass);
+                      nvs_set_str(my_handle, "ip", parsed_ip);
+                      nvs_commit(my_handle);
+                      nvs_close(my_handle);
+                      ESP_LOGI(TAG, "WiFi config saved to NVS: SSID='%s', Pass='%s', IP='%s'. Restarting...",
+                               parsed_ssid, parsed_pass, parsed_ip);
+                  }
                   uart_send_and_log("WIFI_SAVED\n");
-                  vTaskDelay(pdMS_TO_TICKS(1000));
+                  vTaskDelay(pdMS_TO_TICKS(800));
                   esp_restart();
               }
             }

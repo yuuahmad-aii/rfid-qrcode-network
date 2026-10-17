@@ -104,6 +104,12 @@ bool GUI_Attendance_IsSleeping(void);
 void GUI_Attendance_NotifyActivity(void);
 
 /**
+  * @brief  Tampilkan atau sembunyikan popup modal peringatan MicroSD dicabut
+  * @param  show true untuk menampilkan peringatan, false untuk menyembunyikan
+  */
+void GUI_Attendance_ShowSDWarning(bool show);
+
+/**
   * @brief  Fungsi pembaca riwayat log absensi terakhir dari MicroSD (ATTEND.CSV)
   * @param  logs Array string buffer untuk menampung baris log
   * @param  max_logs Jumlah baris log maksimum yang dibaca
