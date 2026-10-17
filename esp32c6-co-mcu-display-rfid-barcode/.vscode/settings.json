@@ -15,5 +15,5 @@
     "--compile-commands-dir=c:\\Users\\ahmad\\Documents\\Project-Yuuahmad\\rfid-qrcode-network\\esp32c6-co-mcu-display-rfid-barcode\\build"
   ],
   "idf.flashType": "JTAG",
-  "idf.port": "COM29"
+  "idf.port": "COM30"
 }

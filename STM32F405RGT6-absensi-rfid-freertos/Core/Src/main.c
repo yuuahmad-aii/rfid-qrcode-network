@@ -32,27 +32,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include "lvgl.h"
+#include "gui_attendance.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum {
-    UI_EVENT_NONE = 0,
-    UI_EVENT_RFID_CARD_DETECTED,
-    UI_EVENT_ATTENDANCE_SUCCESS,
-    UI_EVENT_ATTENDANCE_REJECTED,
-    UI_EVENT_WIFI_STATUS,
-    UI_EVENT_SD_STATUS,
-    UI_EVENT_NTP_SYNCED
-} ui_event_type_t;
-
-typedef struct {
-    uint8_t type;             /* ui_event_type_t (1 byte) */
-    uint8_t status;           /* Status flag: 0=error/fail, 1=success (1 byte) */
-    uint8_t uid_len;          /* Card UID length: 4, 7, or 10 bytes (1 byte) */
-    uint8_t uid[10];          /* Card UID buffer (10 bytes) */
-    char    extra[19];        /* Employee name, reason, or status info (19 bytes) */
-} ui_event_t;                 /* Exactly 32 bytes (matches uiEventQueue item size) */
 
 typedef struct {
     uint32_t timestamp;       /* Unix or custom timestamp (4 bytes) */
@@ -67,9 +52,12 @@ typedef struct {
     char     log_msg[44];     /* Text log details or remark (44 bytes) */
 } sd_log_item_t;              /* Exactly 64 bytes (matches sdLogQueue item size) */
 
+#ifndef ESP_TX_ITEM_DEFINED
+#define ESP_TX_ITEM_DEFINED
 typedef struct {
     char payload[64];         /* Formatted string packet to ESP32 (64 bytes) */
 } esp_tx_item_t;              /* Exactly 64 bytes (matches espTxQueue item size) */
+#endif
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -125,7 +113,7 @@ const osThreadAttr_t Task_RFID_attributes = {
 osThreadId_t Task_GUIHandle;
 const osThreadAttr_t Task_GUI_attributes = {
   .name = "Task_GUI",
-  .stack_size = 1024 * 4,
+  .stack_size = 1536 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for Task_ESP32 */
@@ -192,9 +180,6 @@ char uart1_rx_buf[128];
 volatile uint16_t uart1_rx_idx = 0;
 volatile uint8_t uart1_rx_ready = 0;
 
-/* UI State Variables */
-static bool g_popup_active = false;
-static uint16_t g_popup_timer_ms = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -215,11 +200,8 @@ void StartEsp32Task(void *argument);
 void StartStorageTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-void UI_DrawMainDashboard(void);
-void UI_UpdateClockAndHeader(void);
-void UI_ShowAttendancePopup(const char *title, const char *uid_str, const char *time_str, const char *status_str, uint16_t border_color);
-void UI_DismissAttendancePopup(void);
-void UI_HandleTouchFeedback(uint16_t x, uint16_t y);
+static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map);
+static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -892,170 +874,44 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 /* ========================================================================== */
-/*                       GRAPHICAL USER INTERFACE (GUI) HELPERS               */
+/*                       LVGL DISPLAY & TOUCH DRIVER CALLBACKS                */
 /* ========================================================================== */
 
 /**
-  * @brief  Gambar seluruh antarmuka utama (Dashboard)
+  * @brief  LVGL Display flush callback sending pixels to ILI9488
   */
-void UI_DrawMainDashboard(void)
+static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-  /* 1. Latar Belakang Utama */
-  ILI9488_FillScreen(COLOR_BG);
-
-  /* 2. Header Bar */
-  ILI9488_FillRectangle(0, 0, 480, 32, COLOR_HEADER_BG);
-  ILI9488_DrawLine(0, 32, 479, 32, COLOR_BORDER_CYAN);
-  ILI9488_WriteString(10, 11, "RFID ATTENDANCE", Font_7x10, COLOR_BORDER_CYAN, COLOR_HEADER_BG);
-
-  /* 3. Panel Tengah Tempat Tap Kartu */
-  ILI9488_FillRectangle(55, 48, 370, 170, COLOR_PANEL_BG);
-  ILI9488_DrawRectangle(55, 48, 370, 170, COLOR_BORDER_CYAN);
-  ILI9488_DrawRectangle(57, 50, 366, 166, COLOR_BORDER_CYAN);
-
-  ILI9488_WriteStringScaled(80, 70, "TEMPELKAN KARTU", Font_7x10, COLOR_ACCENT_YELLOW, COLOR_PANEL_BG, 2);
-  ILI9488_WriteStringScaled(135, 105, "((( RFID TAP )))", Font_7x10, COLOR_ACCENT_GREEN, COLOR_PANEL_BG, 2);
-  ILI9488_WriteString(105, 142, "NXP CLRC66303  |  ISO14443A", Font_7x10, COLOR_BORDER_CYAN, COLOR_PANEL_BG);
-  ILI9488_WriteString(110, 178, "Siap Merekam Kehadiran Anda", Font_7x10, COLOR_TEXT_MUTED, COLOR_PANEL_BG);
-
-  /* 4. Footer Bar Tombol Sentuh */
-  ILI9488_FillRectangle(0, 274, 480, 46, COLOR_HEADER_BG);
-  ILI9488_DrawLine(0, 274, 479, 274, COLOR_BORDER_CYAN);
-
-  /* Tombol 1: REFRESH */
-  ILI9488_FillRectangle(15, 280, 135, 34, COLOR_BTN_BG);
-  ILI9488_DrawRectangle(15, 280, 135, 34, COLOR_BTN_BORDER);
-  ILI9488_WriteString(50, 292, "REFRESH", Font_7x10, COLOR_TEXT_WHITE, COLOR_BTN_BG);
-
-  /* Tombol 2: TEST BEEP */
-  ILI9488_FillRectangle(172, 280, 135, 34, COLOR_BTN_BG);
-  ILI9488_DrawRectangle(172, 280, 135, 34, COLOR_BTN_BORDER);
-  ILI9488_WriteString(205, 292, "TEST BEEP", Font_7x10, COLOR_ACCENT_YELLOW, COLOR_BTN_BG);
-
-  /* Tombol 3: RESET STATS */
-  ILI9488_FillRectangle(330, 280, 135, 34, COLOR_BTN_BG);
-  ILI9488_DrawRectangle(330, 280, 135, 34, COLOR_BTN_BORDER);
-  ILI9488_WriteString(355, 292, "RESET STATS", Font_7x10, COLOR_ACCENT_RED, COLOR_BTN_BG);
-
-  /* Perbarui Status & Jam Awal */
-  UI_UpdateClockAndHeader();
+  ILI9488_DrawBitmapLVGL(area->x1, area->y1, area->x2, area->y2, px_map);
+  lv_display_flush_ready(disp);
 }
 
 /**
-  * @brief  Perbarui tampilan Jam Real-Time dan Status Bar pada Header
+  * @brief  LVGL Touch input callback reading from XPT2046 with mutex protection
   */
-void UI_UpdateClockAndHeader(void)
+static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
 {
-  RTC_TimeTypeDef sTime = {0};
-  RTC_DateTypeDef sDate = {0};
-  HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-  HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-
-  /* Jam Digital di pojok kanan atas */
-  char time_buf[16];
-  snprintf(time_buf, sizeof(time_buf), "%02d:%02d:%02d",
-           sTime.Hours, sTime.Minutes, sTime.Seconds);
-  ILI9488_WriteString(395, 11, time_buf, Font_7x10, COLOR_ACCENT_YELLOW, COLOR_HEADER_BG);
-
-  /* Status Indikator Peripheral di tengah header */
-  ILI9488_WriteString(165, 11, g_sd_mounted ? "[SD:OK]" : "[SD:--]",
-                      Font_7x10, g_sd_mounted ? COLOR_ACCENT_GREEN : COLOR_TEXT_MUTED, COLOR_HEADER_BG);
-  ILI9488_WriteString(225, 11, g_wifi_connected ? "[WIFI:OK]" : "[WIFI:--]",
-                      Font_7x10, g_wifi_connected ? COLOR_ACCENT_GREEN : COLOR_TEXT_MUTED, COLOR_HEADER_BG);
-  ILI9488_WriteString(295, 11, g_clrc663_ready ? "[RFID:OK]" : "[RFID:--]",
-                      Font_7x10, g_clrc663_ready ? COLOR_ACCENT_GREEN : COLOR_TEXT_MUTED, COLOR_HEADER_BG);
-
-  /* Baris Ringkasan Tanggal dan Total Hadir di bawah kotak tap */
-  if (!g_popup_active)
+  uint16_t touch_x = 0, touch_y = 0;
+  if (osMutexAcquire(spi2MutexHandle, 5) == osOK)
   {
-    char stat_buf[56];
-    snprintf(stat_buf, sizeof(stat_buf), "Tgl: 20%02d-%02d-%02d   |   Total Hadir: %lu Orang      ",
-             sDate.Year, sDate.Month, sDate.Date, (unsigned long)g_attendance_total);
-    ILI9488_WriteString(75, 230, stat_buf, Font_7x10, COLOR_TEXT_WHITE, COLOR_BG);
+    if (XPT2046_GetTouch(&touch_x, &touch_y))
+    {
+      data->state = LV_INDEV_STATE_PRESSED;
+      data->point.x = touch_x;
+      data->point.y = touch_y;
+      GUI_Attendance_CheckCornerTouch(touch_x, touch_y);
+    }
+    else
+    {
+      data->state = LV_INDEV_STATE_RELEASED;
+      GUI_Attendance_CheckCornerTouch(0, 0);
+    }
+    osMutexRelease(spi2MutexHandle);
   }
-}
-
-/**
-  * @brief  Tampilkan modal pop-up hasil tap kartu RFID di layar
-  */
-void UI_ShowAttendancePopup(const char *title, const char *uid_str, const char *time_str, const char *status_str, uint16_t border_color)
-{
-  g_popup_active = true;
-
-  /* Kotak Dialog Pop-Up */
-  ILI9488_FillRectangle(45, 42, 390, 182, COLOR_POPUP_BG);
-  ILI9488_DrawRectangle(45, 42, 390, 182, border_color);
-  ILI9488_DrawRectangle(47, 44, 386, 178, border_color);
-
-  /* Header Box Pop-Up */
-  ILI9488_FillRectangle(49, 46, 382, 32, COLOR_HEADER_BG);
-  ILI9488_WriteString(130, 54, title, Font_7x10, border_color, COLOR_HEADER_BG);
-
-  /* Data UID */
-  ILI9488_WriteStringScaled(70, 95, uid_str, Font_7x10, COLOR_TEXT_WHITE, COLOR_POPUP_BG, 2);
-
-  /* Waktu Transaksi */
-  char time_line[48];
-  snprintf(time_line, sizeof(time_line), "Waktu  : %s", time_str);
-  ILI9488_WriteString(75, 130, time_line, Font_7x10, COLOR_ACCENT_YELLOW, COLOR_POPUP_BG);
-
-  /* Status Server / Storage */
-  char status_line[48];
-  snprintf(status_line, sizeof(status_line), "Status : %s", status_str);
-  ILI9488_WriteString(75, 160, status_line, Font_7x10, COLOR_BORDER_CYAN, COLOR_POPUP_BG);
-}
-
-/**
-  * @brief  Tutup dialog pop-up dan kembalikan panel tap standar
-  */
-void UI_DismissAttendancePopup(void)
-{
-  g_popup_active = false;
-
-  /* Bersihkan area popup dan gambar ulang kotak tap tengah */
-  ILI9488_FillRectangle(55, 48, 370, 170, COLOR_PANEL_BG);
-  ILI9488_DrawRectangle(55, 48, 370, 170, COLOR_BORDER_CYAN);
-  ILI9488_DrawRectangle(57, 50, 366, 166, COLOR_BORDER_CYAN);
-
-  ILI9488_WriteStringScaled(80, 70, "TEMPELKAN KARTU", Font_7x10, COLOR_ACCENT_YELLOW, COLOR_PANEL_BG, 2);
-  ILI9488_WriteStringScaled(135, 105, "((( RFID TAP )))", Font_7x10, COLOR_ACCENT_GREEN, COLOR_PANEL_BG, 2);
-  ILI9488_WriteString(105, 142, "NXP CLRC66303  |  ISO14443A", Font_7x10, COLOR_BORDER_CYAN, COLOR_PANEL_BG);
-  ILI9488_WriteString(110, 178, "Siap Merekam Kehadiran Anda", Font_7x10, COLOR_TEXT_MUTED, COLOR_PANEL_BG);
-
-  UI_UpdateClockAndHeader();
-}
-
-/**
-  * @brief  Tangani aksi sentuhan pada tombol navigasi bawah
-  */
-void UI_HandleTouchFeedback(uint16_t x, uint16_t y)
-{
-  if (y >= 270)
+  else
   {
-    /* Tombol 1: REFRESH (X: 15..150) */
-    if (x >= 15 && x <= 150)
-    {
-      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
-      osDelay(30);
-      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
-      UI_DrawMainDashboard();
-    }
-    /* Tombol 2: TEST BEEP (X: 172..307) */
-    else if (x >= 172 && x <= 307)
-    {
-      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
-      osDelay(80);
-      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
-    }
-    /* Tombol 3: RESET STATS (X: 330..465) */
-    else if (x >= 330 && x <= 465)
-    {
-      g_attendance_total = 0;
-      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
-      osDelay(50);
-      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
-      UI_UpdateClockAndHeader();
-    }
+    data->state = LV_INDEV_STATE_RELEASED;
+    GUI_Attendance_CheckCornerTouch(0, 0);
   }
 }
 /* USER CODE END 4 */
@@ -1164,6 +1020,16 @@ void StartRfidTask(void *argument)
             memcpy(sd_item.uid, card.uid, card.uid_len);
             snprintf(sd_item.log_msg, sizeof(sd_item.log_msg), "CARD_TAP_OK");
             osMessageQueuePut(sdLogQueueHandle, &sd_item, 0, 10);
+
+            /* Kirim permintaan verifikasi ke ESP32 via espTxQueue */
+            esp_tx_item_t esp_item = {0};
+            if (card.uid_len >= 4) {
+              snprintf(esp_item.payload, sizeof(esp_item.payload), "RFID:%02X%02X%02X%02X\n",
+                       card.uid[0], card.uid[1], card.uid[2], card.uid[3]);
+            } else {
+              snprintf(esp_item.payload, sizeof(esp_item.payload), "RFID:UNKNOWN\n");
+            }
+            osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 10);
           }
         }
       }
@@ -1183,91 +1049,63 @@ void StartRfidTask(void *argument)
 void StartGuiTask(void *argument)
 {
   /* USER CODE BEGIN StartGuiTask */
-  /* Nyalakan Backlight Layar LCD via PWM TIM3 CH3 */
+  /* 1. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 */
   HAL_TIM_Base_Start(&htim3);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 50000); /* Kecerahan ~75% */
 
-  /* Gambar tampilan antarmuka utama (Dashboard) */
-  UI_DrawMainDashboard();
+  /* 2. Inisialisasi Core LVGL */
+  lv_init();
+  lv_tick_set_cb(HAL_GetTick);
+
+  /* 3. Setup Display LVGL untuk ILI9488 (RGB888) */
+  lv_display_t *disp = lv_display_create(ILI9488_WIDTH, ILI9488_HEIGHT);
+  lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB888);
+  lv_display_set_flush_cb(disp, my_disp_flush);
+
+  /* Buffer render parsial LVGL (16 baris @ 480 px = 23040 byte) */
+  #define DRAW_BUF_SIZE (ILI9488_WIDTH * 16 * 3)
+  static uint8_t lv_draw_buf[DRAW_BUF_SIZE] __attribute__((aligned(64)));
+  lv_display_set_buffers(disp, lv_draw_buf, NULL, sizeof(lv_draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  /* 4. Setup Input Device Touchscreen (XPT2046) */
+  lv_indev_t *indev = lv_indev_create();
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(indev, my_touchpad_read);
+
+  /* 5. Inisialisasi Antarmuka GUI Absensi */
+  GUI_Attendance_Init();
 
   uint32_t last_clock_tick = 0;
 
-  /* Infinite loop (Berjalan setiap 10 ms) */
+  /* Infinite loop GUI Task */
   for(;;)
   {
-    /* 1. Periksa uiEventQueue untuk memunculkan pop-up absensi atau notifikasi di layar */
+    /* 1. Periksa event masuk dari uiEventQueue (misal dari Task_RFID, Task_ESP32) */
     ui_event_t evt;
-    if (osMessageQueueGet(uiEventQueueHandle, &evt, NULL, 0) == osOK)
+    while (osMessageQueueGet(uiEventQueueHandle, &evt, NULL, 0) == osOK)
     {
-      if (evt.type == UI_EVENT_RFID_CARD_DETECTED)
-      {
-        g_attendance_total++;
-        char uid_str[32];
-        if (evt.uid_len >= 4) {
-          snprintf(uid_str, sizeof(uid_str), "UID: %02X %02X %02X %02X",
-                   evt.uid[0], evt.uid[1], evt.uid[2], evt.uid[3]);
-        } else {
-          snprintf(uid_str, sizeof(uid_str), "UID: UNKNOWN");
-        }
-        UI_ShowAttendancePopup("[ TAP TERDETEKSI ]", uid_str, evt.extra,
-                               "Memverifikasi ke Server...", COLOR_BORDER_CYAN);
-        g_popup_timer_ms = 2500; /* Pop-up tampil selama 2.5 detik */
-      }
-      else if (evt.type == UI_EVENT_ATTENDANCE_SUCCESS)
-      {
-        UI_ShowAttendancePopup("[ ABSENSI BERHASIL ]", "Akses Diberikan", evt.extra,
-                               "Data Tersimpan ke Cloud", COLOR_ACCENT_GREEN);
-        g_popup_timer_ms = 2500;
-      }
-      else if (evt.type == UI_EVENT_ATTENDANCE_REJECTED)
-      {
-        UI_ShowAttendancePopup("[ AKSES DITOLAK ]", "Kartu Tidak Terdaftar", evt.extra,
-                               "Silakan Hubungi Administrator", COLOR_ACCENT_RED);
-        g_popup_timer_ms = 2500;
-      }
-      else if (evt.type == UI_EVENT_WIFI_STATUS || evt.type == UI_EVENT_NTP_SYNCED)
-      {
-        UI_UpdateClockAndHeader();
-      }
+      GUI_Attendance_ProcessEvent(&evt);
     }
 
-    /* 2. Periksa input sentuhan layar TOUCH_IRQ (XPT2046 di SPI2) */
-    if (XPT2046_IsTouched())
+    /* 2. Perbarui tampilan jam RTC dan status peripheral setiap 500 ms */
+    uint32_t now = HAL_GetTick();
+    if (now - last_clock_tick >= 500)
     {
-      uint16_t tx = 0, ty = 0;
-      if (osMutexAcquire(spi2MutexHandle, 5) == osOK)
-      {
-        if (XPT2046_GetTouch(&tx, &ty))
-        {
-          UI_HandleTouchFeedback(tx, ty);
-        }
-        osMutexRelease(spi2MutexHandle);
-      }
+      last_clock_tick = now;
+      RTC_TimeTypeDef sTime = {0};
+      RTC_DateTypeDef sDate = {0};
+      HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+      HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+      GUI_Attendance_UpdateClock(&sTime, &sDate);
+      GUI_Attendance_UpdateBadges(g_clrc663_ready, g_wifi_connected, g_sd_mounted);
     }
 
-    /* 3. Perbarui waktu RTC pada Header setiap 1000 ms */
-    if (HAL_GetTick() - last_clock_tick >= 1000)
-    {
-      last_clock_tick = HAL_GetTick();
-      UI_UpdateClockAndHeader();
-    }
+    /* 3. Jalankan LVGL timer handler */
+    lv_timer_handler();
 
-    /* 4. Hitung mundur durasi Pop-up */
-    if (g_popup_active)
-    {
-      if (g_popup_timer_ms > 10)
-      {
-        g_popup_timer_ms -= 10;
-      }
-      else
-      {
-        UI_DismissAttendancePopup();
-      }
-    }
-
-    /* Delay siklus loop grafis tepat 10 ms */
-    osDelay(10);
+    /* 4. Yield task ke scheduler FreeRTOS */
+    osDelay(5);
   }
   /* USER CODE END StartGuiTask */
 }
@@ -1284,6 +1122,11 @@ void StartEsp32Task(void *argument)
   /* USER CODE BEGIN StartEsp32Task */
   /* Aktifkan penerimaan UART1 interrupt dari ESP32-C6 */
   HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
+
+  /* Beri jeda sejenak lalu minta status koneksi Wi-Fi awal ke ESP32 */
+  osDelay(300);
+  const char *cmd_wifi_status = "CMD:GET_WIFI_STATUS\n";
+  HAL_UART_Transmit(&huart1, (uint8_t*)cmd_wifi_status, strlen(cmd_wifi_status), 100);
 
   for(;;)
   {
@@ -1383,6 +1226,16 @@ void StartEsp32Task(void *argument)
 void StartStorageTask(void *argument)
 {
   /* USER CODE BEGIN StartStorageTask */
+  /* Coba mount MicroSD saat startup agar status badge langsung OK jika kartu terpasang */
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK)
+  {
+    if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK)
+    {
+      g_sd_mounted = true;
+    }
+    osMutexRelease(sdioFatFsMutexHandle);
+  }
+
   /* Tunggu data masuk dari sdLogQueue */
   for(;;)
   {
@@ -1417,6 +1270,11 @@ void StartStorageTask(void *argument)
             f_write(&SDFile, log_line, strlen(log_line), &bw);
             f_sync(&SDFile);
             f_close(&SDFile);
+          }
+          else
+          {
+            /* Jika gagal membuka file, asumsikan SD dicabut atau error */
+            g_sd_mounted = false;
           }
         }
         osMutexRelease(sdioFatFsMutexHandle);

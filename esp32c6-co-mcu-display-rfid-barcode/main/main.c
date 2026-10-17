@@ -112,6 +112,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     set_led_color(50, 0, 0); // Red
+    uart_send_and_log("WIFI:FAIL\n");
     esp_wifi_connect();
     ESP_LOGI(TAG, "retry to connect to the AP");
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -119,6 +120,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
     set_led_color(0, 0, 50); // Blue (Connected, idle)
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    uart_send_and_log("WIFI:OK\n");
   }
 }
 
@@ -485,6 +487,13 @@ static void uart_task(void *pvParameters) {
               send_api_request(rfid_str + 8, "qr");
             } else if (strncmp(rfid_str, "CMD:SYNC_TIME", 13) == 0) {
               xSemaphoreGive(sync_time_sem);
+            } else if (strncmp(rfid_str, "CMD:GET_WIFI_STATUS", 19) == 0) {
+              EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+              if (bits & WIFI_CONNECTED_BIT) {
+                uart_send_and_log("WIFI:OK\n");
+              } else {
+                uart_send_and_log("WIFI:FAIL\n");
+              }
             } else if (strncmp(rfid_str, "WIFI:", 5) == 0) {
               char *data = rfid_str + 5;
               char *ssid = strtok(data, "|");
