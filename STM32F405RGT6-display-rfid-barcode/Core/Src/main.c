@@ -608,18 +608,6 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM14_Init();
   /* USER CODE BEGIN 2 */
-	// 1. Nyalakan Backlight Layar via PWM TIM3 Channel 3 (PB0) ~75% brightness
-	
-	// 1. Nyalakan Backlight Layar (Force HIGH as GPIO)
-	HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
-	GPIO_InitStruct.Pin = GPIO_PIN_0;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
-
 
 	// 2. Inisialisasi Layar TFT ILI9488 (SPI1) dan Touch Controller XPT2046 (SPI2)
 	ILI9488_Init();
@@ -657,6 +645,10 @@ int main(void)
 
 	// Start TIM14 for LVGL tick
 	HAL_TIM_Base_Start_IT(&htim14);
+
+	// Start TIM3 for Display Brightness
+	HAL_TIM_Base_Init(&htim3);
+	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
 
 	// Initialize EEZ Studio UI
 	ui_init();

@@ -1,6 +1,6 @@
 {
   "navigation": {
-    "selectedUserPageObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/2",
+    "selectedUserPageObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/0",
     "selectedActionObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/actions/11",
     "selectedThemeObject": "[3inch5-display-rfid-barcode-gui.eez-project]:/themes/0",
     "subnavigationSelectedItems": {
@@ -25,7 +25,7 @@
           },
           {
             "type": "border",
-            "selected": 4,
+            "selected": 3,
             "size": 240,
             "location": "right",
             "children": [
@@ -74,6 +74,7 @@
           {
             "type": "border",
             "selected": 0,
+            "size": 89.5,
             "location": "bottom",
             "children": [
               {
@@ -192,10 +193,21 @@
               "type": "tabset",
               "id": "EDITORS",
               "weight": 41.9887144417656,
-              "selected": 1,
+              "selected": 3,
               "enableDeleteWhenEmpty": false,
               "enableClose": false,
               "children": [
+                {
+                  "type": "tab",
+                  "id": "#609b4010-76c5-4113-a929-ea58b1f01726",
+                  "name": "Admin_Settings",
+                  "component": "editor",
+                  "config": {
+                    "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/6",
+                    "permanent": false
+                  },
+                  "icon": "svg:page"
+                },
                 {
                   "type": "tab",
                   "id": "#5998ae7f-4d45-4c4a-abf3-fcee03a2ef53",
@@ -210,17 +222,6 @@
                 },
                 {
                   "type": "tab",
-                  "id": "#26e2ed0a-d59a-4ace-b895-f304a4f43cf9",
-                  "name": "Rfid_Read",
-                  "component": "editor",
-                  "config": {
-                    "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/2",
-                    "permanent": true
-                  },
-                  "icon": "svg:page"
-                },
-                {
-                  "type": "tab",
                   "id": "#3afa37a3-6036-434a-b9ea-7d3246a0fab2",
                   "name": "Admin_Users",
                   "component": "editor",
@@ -232,33 +233,11 @@
                 },
                 {
                   "type": "tab",
-                  "id": "#8fc840ae-2174-4d44-be1b-37b195dde927",
-                  "name": "Admin_Settings",
-                  "component": "editor",
-                  "config": {
-                    "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/8",
-                    "permanent": true
-                  },
-                  "icon": "svg:page"
-                },
-                {
-                  "type": "tab",
                   "id": "#ebe01b9e-1a17-4036-966b-f26182b0d7b8",
                   "name": "main_screen",
                   "component": "editor",
                   "config": {
                     "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/0",
-                    "permanent": true
-                  },
-                  "icon": "svg:page"
-                },
-                {
-                  "type": "tab",
-                  "id": "#f1650985-1650-47d0-af5a-6e34ef3fe6d1",
-                  "name": "Qr_Read",
-                  "component": "editor",
-                  "config": {
-                    "objectPath": "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/1",
                     "permanent": true
                   },
                   "icon": "svg:page"
@@ -274,7 +253,7 @@
                 {
                   "type": "tabset",
                   "id": "#d6274701-51b4-403f-8d19-80eca9731ee5",
-                  "weight": 2.3262711864406778,
+                  "weight": 1.5164835164835164,
                   "children": [
                     {
                       "type": "tab",
@@ -289,7 +268,7 @@
                 {
                   "type": "tabset",
                   "id": "#e02b49fe-f866-42d9-8d90-0f8f137ea51c",
-                  "weight": 0.673728813559322,
+                  "weight": 1.4835164835164836,
                   "children": [
                     {
                       "type": "tab",
@@ -1135,10 +1114,10 @@
       },
       "transform": {
         "translate": {
-          "x": -228,
-          "y": -134
+          "x": -280,
+          "y": -176
         },
-        "scale": 0.9
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1148,65 +1127,6 @@
       }
     },
     "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/1[flow-state]": {
-      "selectionFront": {},
-      "selectionBack": {
-        "0": {}
-      },
-      "transform": {
-        "translate": {
-          "x": -240,
-          "y": -160
-        },
-        "scale": 0.9
-      },
-      "timeline": {
-        "isEditorActive": false,
-        "position": 0,
-        "secondToPx": 200,
-        "scrollLeft": 0
-      }
-    },
-    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/2[flow-state]": {
-      "selectionFront": {},
-      "selectionBack": {
-        "0": {}
-      },
-      "transform": {
-        "translate": {
-          "x": -240,
-          "y": -160
-        },
-        "scale": 0.9
-      },
-      "timeline": {
-        "isEditorActive": false,
-        "position": 0,
-        "secondToPx": 200,
-        "scrollLeft": 0
-      }
-    },
-    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/3[flow-state]": {
-      "selectionFront": {},
-      "selectionBack": {
-        "0": {
-          "0": {}
-        }
-      },
-      "transform": {
-        "translate": {
-          "x": -240,
-          "y": -160
-        },
-        "scale": 0.9
-      },
-      "timeline": {
-        "isEditorActive": false,
-        "position": 0,
-        "secondToPx": 200,
-        "scrollLeft": 0
-      }
-    },
-    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/4[flow-state]": {
       "selectionFront": {},
       "selectionBack": {
         "0": {
@@ -1220,7 +1140,79 @@
           "x": -240,
           "y": -160
         },
-        "scale": 0.9
+        "scale": 1.25
+      },
+      "timeline": {
+        "isEditorActive": false,
+        "position": 0,
+        "secondToPx": 200,
+        "scrollLeft": 0
+      }
+    },
+    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/2[flow-state]": {
+      "selectionFront": {},
+      "selectionBack": {
+        "0": {
+          "0": {
+            "2": {}
+          }
+        }
+      },
+      "transform": {
+        "translate": {
+          "x": -380.66666666666663,
+          "y": -231.0000000000001
+        },
+        "scale": 1.25
+      },
+      "timeline": {
+        "isEditorActive": false,
+        "position": 0,
+        "secondToPx": 200,
+        "scrollLeft": 0
+      }
+    },
+    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/3[flow-state]": {
+      "selectionFront": {},
+      "selectionBack": {
+        "0": {
+          "0": {
+            "2": {}
+          }
+        }
+      },
+      "transform": {
+        "translate": {
+          "x": -380.66666666666663,
+          "y": -231.0000000000001
+        },
+        "scale": 1.25
+      },
+      "timeline": {
+        "isEditorActive": false,
+        "position": 0,
+        "secondToPx": 200,
+        "scrollLeft": 0
+      }
+    },
+    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/4[flow-state]": {
+      "selectionFront": {},
+      "selectionBack": {
+        "0": {
+          "0": {
+            "0": {},
+            "1": {},
+            "4": {}
+          },
+          "1": {}
+        }
+      },
+      "transform": {
+        "translate": {
+          "x": -442.15281385281384,
+          "y": -201.23151515151517
+        },
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1234,19 +1226,19 @@
       "selectionBack": {
         "0": {
           "0": {
-            "2": {
-              "6": {},
-              "9": {}
-            }
-          }
+            "0": {},
+            "1": {},
+            "4": {}
+          },
+          "1": {}
         }
       },
       "transform": {
         "translate": {
-          "x": -240,
-          "y": -160
+          "x": -442.15281385281384,
+          "y": -201.23151515151517
         },
-        "scale": 0.9
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1262,17 +1254,21 @@
           "0": {
             "0": {},
             "1": {},
+            "2": {},
+            "3": {},
             "4": {}
           },
-          "1": {}
+          "1": {
+            "10": {}
+          }
         }
       },
       "transform": {
         "translate": {
-          "x": -193.47922077922075,
-          "y": -90.84727272727275
+          "x": -255.75,
+          "y": -207.68906250000006
         },
-        "scale": 0.9
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1287,19 +1283,20 @@
         "0": {
           "0": {
             "0": {},
+            "1": {},
+            "2": {},
+            "3": {},
             "4": {}
           },
-          "1": {
-            "1": {}
-          }
+          "1": {}
         }
       },
       "transform": {
         "translate": {
-          "x": -237,
-          "y": -151
+          "x": -255.75,
+          "y": -207.68906250000006
         },
-        "scale": 0.9
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1315,18 +1312,16 @@
           "0": {
             "0": {},
             "1": {},
-            "2": {},
-            "3": {},
-            "4": {}
+            "2": {}
           }
         }
       },
       "transform": {
         "translate": {
-          "x": -205,
-          "y": -146
+          "x": -255.75,
+          "y": -207.68906250000006
         },
-        "scale": 0.9
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1340,18 +1335,73 @@
       "selectionBack": {
         "0": {
           "0": {
-            "2": {},
-            "4": {}
-          },
-          "1": {}
+            "2": {
+              "0": {},
+              "1": {},
+              "2": {},
+              "3": {},
+              "4": {},
+              "5": {},
+              "6": {},
+              "7": {},
+              "8": {},
+              "9": {},
+              "10": {},
+              "11": {},
+              "12": {},
+              "13": {},
+              "14": {},
+              "15": {}
+            }
+          }
         }
       },
       "transform": {
         "translate": {
-          "x": -190.875,
-          "y": -173.4999999999999
+          "x": -270.065,
+          "y": -178.0650000000001
         },
-        "scale": 0.9
+        "scale": 1.25
+      },
+      "timeline": {
+        "isEditorActive": false,
+        "position": 0,
+        "secondToPx": 200,
+        "scrollLeft": 0
+      }
+    },
+    "[3inch5-display-rfid-barcode-gui.eez-project]:/userPages/10[flow-state]": {
+      "selectionFront": {},
+      "selectionBack": {
+        "0": {
+          "0": {
+            "2": {
+              "0": {},
+              "1": {},
+              "2": {},
+              "3": {},
+              "4": {},
+              "5": {},
+              "6": {},
+              "7": {},
+              "8": {},
+              "9": {},
+              "10": {},
+              "11": {},
+              "12": {},
+              "13": {},
+              "14": {},
+              "15": {}
+            }
+          }
+        }
+      },
+      "transform": {
+        "translate": {
+          "x": -270.065,
+          "y": -178.0650000000001
+        },
+        "scale": 1.25
       },
       "timeline": {
         "isEditorActive": false,
@@ -1378,10 +1428,14 @@
   "lvglExpandedPropertiesGroup": [
     "BACKGROUND",
     "POSITION AND SIZE",
-    "TEXT"
+    "TEXT",
+    "MARGIN",
+    "PADDING",
+    "LAYOUT",
+    "MISCELLANEOUS"
   ],
   "showInactiveFlowsInDebugger": true,
   "globalFlowZoom": true,
-  "flowZoom": 0.9,
+  "flowZoom": 1.25,
   "implementationLanguage": "C"
 }

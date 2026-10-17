@@ -34,6 +34,6 @@
 ../Core/Src/main.c:318:6:App_DrawMainUI	72	static
 ../Core/Src/main.c:388:6:App_RFIDProcess	136	static
 ../Core/Src/main.c:433:6:App_TouchProcess	128	static
-../Core/Src/main.c:817:6:SystemClock_Config	88	static,ignoring_inline_asm
-../Core/Src/main.c:571:5:main	160	static,ignoring_inline_asm
-../Core/Src/main.c:1420:6:Error_Handler	0	static,ignoring_inline_asm
+../Core/Src/main.c:809:6:SystemClock_Config	88	static,ignoring_inline_asm
+../Core/Src/main.c:571:5:main	152	static,ignoring_inline_asm
+../Core/Src/main.c:1412:6:Error_Handler	0	static,ignoring_inline_asm

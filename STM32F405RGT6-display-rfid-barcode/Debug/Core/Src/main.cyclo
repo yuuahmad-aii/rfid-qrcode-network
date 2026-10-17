@@ -34,6 +34,6 @@
 ../Core/Src/main.c:318:6:App_DrawMainUI	2
 ../Core/Src/main.c:388:6:App_RFIDProcess	8
 ../Core/Src/main.c:433:6:App_TouchProcess	10
-../Core/Src/main.c:817:6:SystemClock_Config	3
+../Core/Src/main.c:809:6:SystemClock_Config	3
 ../Core/Src/main.c:571:5:main	47
-../Core/Src/main.c:1420:6:Error_Handler	1
+../Core/Src/main.c:1412:6:Error_Handler	1
