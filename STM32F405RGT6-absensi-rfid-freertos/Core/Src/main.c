@@ -113,7 +113,7 @@ const osThreadAttr_t Task_RFID_attributes = {
 osThreadId_t Task_GUIHandle;
 const osThreadAttr_t Task_GUI_attributes = {
   .name = "Task_GUI",
-  .stack_size = 1536 * 4,
+  .stack_size = 1600 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for Task_ESP32 */
@@ -266,7 +266,7 @@ int main(void)
 
   /* Create the semaphores(s) */
   /* creation of spi1TxDmaSem */
-  spi1TxDmaSemHandle = osSemaphoreNew(1, 0, &spi1TxDmaSem_attributes);
+  spi1TxDmaSemHandle = osSemaphoreNew(1, 1, &spi1TxDmaSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -344,9 +344,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 25;
@@ -459,7 +459,13 @@ static void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
-
+  __HAL_RCC_PWR_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == 0x32F2)
+  {
+    /* RTC sudah pernah disinkronkan dan terus berjalan via baterai backup */
+    return;
+  }
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
@@ -887,6 +893,50 @@ static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 }
 
 /**
+  * @brief  Membaca riwayat absensi terakhir dari MicroSD (ATTEND.CSV)
+  */
+uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs)
+{
+  uint16_t count = 0;
+  if (!g_sd_mounted) return 0;
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK) return 0;
+
+  if (f_open(&SDFile, "ATTEND.CSV", FA_READ) == FR_OK)
+  {
+    FSIZE_t size = f_size(&SDFile);
+    /* Baca dari dekat akhir file jika ukuran file lebih dari 2KB */
+    FSIZE_t start_pos = (size > 2048) ? (size - 2048) : 0;
+    f_lseek(&SDFile, start_pos);
+
+    char line_buf[128];
+    while (f_gets(line_buf, sizeof(line_buf), &SDFile) != NULL)
+    {
+      size_t len = strlen(line_buf);
+      while (len > 0 && (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n')) {
+        line_buf[--len] = '\0';
+      }
+      if (len > 5) {
+        if (count < max_logs) {
+          strncpy(logs[count], line_buf, 63);
+          logs[count][63] = '\0';
+          count++;
+        } else {
+          for (int i = 0; i < max_logs - 1; i++) {
+            strncpy(logs[i], logs[i + 1], 64);
+          }
+          strncpy(logs[max_logs - 1], line_buf, 63);
+          logs[max_logs - 1][63] = '\0';
+        }
+      }
+    }
+    f_close(&SDFile);
+  }
+
+  osMutexRelease(sdioFatFsMutexHandle);
+  return count;
+}
+
+/**
   * @brief  LVGL Touch input callback reading from XPT2046 with mutex protection
   */
 static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
@@ -896,6 +946,16 @@ static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
   {
     if (XPT2046_GetTouch(&touch_x, &touch_y))
     {
+      if (GUI_Attendance_IsSleeping())
+      {
+        /* Bangunkan layar dari mode sleep dan abaikan sentuhan pertama */
+        GUI_Attendance_Wakeup();
+        data->state = LV_INDEV_STATE_RELEASED;
+        osMutexRelease(spi2MutexHandle);
+        return;
+      }
+
+      GUI_Attendance_NotifyActivity();
       data->state = LV_INDEV_STATE_PRESSED;
       data->point.x = touch_x;
       data->point.y = touch_y;
@@ -1101,10 +1161,13 @@ void StartGuiTask(void *argument)
       GUI_Attendance_UpdateBadges(g_clrc663_ready, g_wifi_connected, g_sd_mounted);
     }
 
-    /* 3. Jalankan LVGL timer handler */
+    /* 3. Periksa screen sleep timer */
+    GUI_Attendance_CheckSleep();
+
+    /* 4. Jalankan LVGL timer handler */
     lv_timer_handler();
 
-    /* 4. Yield task ke scheduler FreeRTOS */
+    /* 5. Yield task ke scheduler FreeRTOS */
     osDelay(5);
   }
   /* USER CODE END StartGuiTask */
@@ -1172,9 +1235,24 @@ void StartEsp32Task(void *argument)
       }
       else if (strncmp(uart1_rx_buf, "TIME:", 5) == 0)
       {
-        /* Sinkronisasi Waktu NTP dari ESP32: TIME:HH:MM:SS-DD/MM/YYYY */
+        /* Sinkronisasi Waktu NTP dari ESP32 */
         int h = 0, m = 0, s = 0, d = 0, mo = 0, y = 0;
-        if (sscanf(uart1_rx_buf + 5, "%d:%d:%d-%d/%d/%d", &h, &m, &s, &d, &mo, &y) == 6)
+        bool parsed = false;
+
+        /* Format 1: YYYY-MM-DD HH:MM:SS */
+        if (sscanf(uart1_rx_buf + 5, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &m, &s) == 6) {
+          parsed = true;
+        }
+        /* Format 2: ISO8601 YYYY-MM-DDTHH:MM:SS */
+        else if (sscanf(uart1_rx_buf + 5, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &m, &s) == 6) {
+          parsed = true;
+        }
+        /* Format 3: HH:MM:SS-DD/MM/YYYY */
+        else if (sscanf(uart1_rx_buf + 5, "%d:%d:%d-%d/%d/%d", &h, &m, &s, &d, &mo, &y) == 6) {
+          parsed = true;
+        }
+
+        if (parsed)
         {
           RTC_TimeTypeDef sTime = {0};
           RTC_DateTypeDef sDate = {0};
@@ -1188,10 +1266,28 @@ void StartEsp32Task(void *argument)
           sDate.Year = (uint8_t)(y >= 2000 ? y - 2000 : y);
           HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
+          /* Tandai di RTC Backup Register bahwa RTC valid & disinkronkan */
+          __HAL_RCC_PWR_CLK_ENABLE();
+          HAL_PWR_EnableBkUpAccess();
+          HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F2);
+
           ui_event_t ui_evt = {0};
           ui_evt.type = UI_EVENT_NTP_SYNCED;
+          ui_evt.status = 1;
+          snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d", h, m, s);
           osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
         }
+      }
+      else if (strncmp(uart1_rx_buf, "TIME_ERR:", 9) == 0)
+      {
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_NTP_FAILED;
+        ui_evt.status = 0;
+        char *err_str = uart1_rx_buf + 9;
+        size_t l = strlen(err_str);
+        while (l > 0 && (err_str[l-1] == '\r' || err_str[l-1] == '\n')) err_str[--l] = '\0';
+        strncpy(ui_evt.extra, err_str, sizeof(ui_evt.extra) - 1);
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
       }
       else if (strncmp(uart1_rx_buf, "WIFI:OK", 7) == 0)
       {
@@ -1200,6 +1296,11 @@ void StartEsp32Task(void *argument)
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 1;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+
+        /* Otomatis minta sinkronisasi jam NTP saat pertama kali tersambung Wi-Fi */
+        esp_tx_item_t sync_cmd = {0};
+        snprintf(sync_cmd.payload, sizeof(sync_cmd.payload), "CMD:SYNC_TIME\n");
+        osMessageQueuePut(espTxQueueHandle, &sync_cmd, 0, 10);
       }
       else if (strncmp(uart1_rx_buf, "WIFI:FAIL", 9) == 0)
       {

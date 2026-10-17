@@ -376,73 +376,80 @@ static void sync_time_task(void *pvParameters) {
         xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE,
                             pdFALSE, portMAX_DELAY);
     if ((bits & WIFI_CONNECTED_BIT) != 0) {
-      // Ensure system time is set for TLS certificate validation
-      time_t now;
-      struct tm timeinfo;
-      time(&now);
-      localtime_r(&now, &timeinfo);
-      if (timeinfo.tm_year < (2020 - 1900)) {
-        ESP_LOGI(TAG, "System time is not set. Syncing via SNTP...");
-        esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-        esp_netif_sntp_init(&sntp_config);
+      bool synced = false;
 
-        ESP_LOGI(TAG, "Waiting for system time to be set...");
-        esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000));
+      /* 1. Sinkronisasi via standard NTP (SNTP pool.ntp.org) */
+      ESP_LOGI(TAG, "Syncing time via SNTP...");
+      esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+      esp_netif_sntp_init(&sntp_config);
+
+      if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(8000)) == ESP_OK) {
+        setenv("TZ", "WIB-7", 1);
+        tzset();
+        time_t now;
+        struct tm timeinfo;
         time(&now);
         localtime_r(&now, &timeinfo);
         if (timeinfo.tm_year >= (2020 - 1900)) {
-          ESP_LOGI(TAG, "System time successfully set to year %d", timeinfo.tm_year + 1900);
-          setenv("TZ", "WIB-7", 1);
-          tzset();
-        } else {
-          ESP_LOGE(TAG, "Failed to set system time via SNTP!");
+          char uart_msg[64];
+          snprintf(uart_msg, sizeof(uart_msg), "TIME:%04d-%02d-%02d %02d:%02d:%02d\n",
+                   timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                   timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+          uart_send_and_log(uart_msg);
+          ESP_LOGI(TAG, "Sent SNTP time to STM32: %s", uart_msg);
+          synced = true;
         }
-        esp_netif_sntp_deinit();
       }
+      esp_netif_sntp_deinit();
 
-      ESP_LOGI(TAG, "Fetching time from server API...");
-      time_response_len = 0;
-      memset(time_response_buffer, 0, sizeof(time_response_buffer));
+      /* 2. Jika SNTP gagal, coba server API */
+      if (!synced && strlen(API_TIME_URL) > 0) {
+        ESP_LOGI(TAG, "Fetching time from server API...");
+        time_response_len = 0;
+        memset(time_response_buffer, 0, sizeof(time_response_buffer));
 
-      esp_http_client_config_t config = {
-          .url = API_TIME_URL,
-          .event_handler = _http_time_event_handler,
-          .cert_pem = cloudflare_ca_pem,
-      };
-      esp_http_client_handle_t client = esp_http_client_init(&config);
-      esp_http_client_set_header(client, "X-API-Key", API_KEY);
+        esp_http_client_config_t config = {
+            .url = API_TIME_URL,
+            .event_handler = _http_time_event_handler,
+            .cert_pem = cloudflare_ca_pem,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        esp_http_client_set_header(client, "X-API-Key", API_KEY);
 
-      esp_err_t err = esp_http_client_perform(client);
-      if (err == ESP_OK) {
-        int status_code = esp_http_client_get_status_code(client);
-        if (status_code >= 200 && status_code < 300) {
-          char *time_start = strstr(time_response_buffer, "\"server_time\":\"");
-          if (time_start) {
-            time_start += 15;
-            char time_str[32] = {0};
-            strncpy(time_str, time_start, 19);
-            time_str[10] = ' '; // Replace 'T' with space
+        esp_err_t err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+          int status_code = esp_http_client_get_status_code(client);
+          if (status_code >= 200 && status_code < 300) {
+            char *time_start = strstr(time_response_buffer, "\"server_time\":\"");
+            if (time_start) {
+              time_start += 15;
+              char time_str[32] = {0};
+              strncpy(time_str, time_start, 19);
+              time_str[10] = ' '; // Replace 'T' with space
 
-            char uart_msg[64];
-            snprintf(uart_msg, sizeof(uart_msg), "TIME:%s\n", time_str);
-            uart_send_and_log(uart_msg);
-            ESP_LOGI(TAG, "Sent to STM32: %s", uart_msg);
+              char uart_msg[64];
+              snprintf(uart_msg, sizeof(uart_msg), "TIME:%s\n", time_str);
+              uart_send_and_log(uart_msg);
+              ESP_LOGI(TAG, "Sent API time to STM32: %s", uart_msg);
+              synced = true;
+            } else {
+              uart_send_and_log("TIME_ERR:PARSE_FAIL\n");
+            }
           } else {
-            ESP_LOGE(TAG, "Failed to parse time. Response: %s",
-                     time_response_buffer);
-            uart_send_and_log("TIME_ERR:PARSE_FAIL\n");
+            char err_msg[64];
+            snprintf(err_msg, sizeof(err_msg), "TIME_ERR:HTTP_%d\n", status_code);
+            uart_send_and_log(err_msg);
           }
         } else {
-          ESP_LOGE(TAG, "HTTP GET time failed status: %d", status_code);
-          char err_msg[64];
-          snprintf(err_msg, sizeof(err_msg), "TIME_ERR:HTTP_%d\n", status_code);
-          uart_send_and_log(err_msg);
+          uart_send_and_log("TIME_ERR:CONN_FAIL\n");
         }
-      } else {
-        ESP_LOGE(TAG, "HTTP GET time failed: %s", esp_err_to_name(err));
-        uart_send_and_log("TIME_ERR:CONN_FAIL\n");
+        esp_http_client_cleanup(client);
       }
-      esp_http_client_cleanup(client);
+
+      if (!synced) {
+        ESP_LOGE(TAG, "All time sync methods failed!");
+        uart_send_and_log("TIME_ERR:NTP_TIMEOUT\n");
+      }
 
       // Wait up to 1 hour before next sync, or until triggered
       xSemaphoreTake(sync_time_sem, pdMS_TO_TICKS(3600000));
@@ -486,7 +493,12 @@ static void uart_task(void *pvParameters) {
             } else if (strncmp(rfid_str, "BARCODE:", 8) == 0) {
               send_api_request(rfid_str + 8, "qr");
             } else if (strncmp(rfid_str, "CMD:SYNC_TIME", 13) == 0) {
-              xSemaphoreGive(sync_time_sem);
+              EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+              if (!(bits & WIFI_CONNECTED_BIT)) {
+                uart_send_and_log("TIME_ERR:WIFI_DISCONNECTED\n");
+              } else {
+                xSemaphoreGive(sync_time_sem);
+              }
             } else if (strncmp(rfid_str, "CMD:GET_WIFI_STATUS", 19) == 0) {
               EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
               if (bits & WIFI_CONNECTED_BIT) {

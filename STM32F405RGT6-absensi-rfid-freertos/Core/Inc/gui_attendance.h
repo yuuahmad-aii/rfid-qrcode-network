@@ -25,7 +25,8 @@ typedef enum {
     UI_EVENT_ATTENDANCE_REJECTED,
     UI_EVENT_WIFI_STATUS,
     UI_EVENT_SD_STATUS,
-    UI_EVENT_NTP_SYNCED
+    UI_EVENT_NTP_SYNCED,
+    UI_EVENT_NTP_FAILED
 } ui_event_type_t;
 
 typedef struct {
@@ -81,6 +82,34 @@ void GUI_Attendance_CheckCornerTouch(uint16_t x, uint16_t y);
   * @brief  Reset hitungan total absensi
   */
 void GUI_Attendance_ResetCounter(void);
+
+/**
+  * @brief  Cek dan eksekusi screen sleep/dim jika idle timeout tercapai
+  */
+void GUI_Attendance_CheckSleep(void);
+
+/**
+  * @brief  Bangunkan layar dari mode sleep
+  */
+void GUI_Attendance_Wakeup(void);
+
+/**
+  * @brief  Periksa apakah layar sedang dalam kondisi sleep/mati
+  */
+bool GUI_Attendance_IsSleeping(void);
+
+/**
+  * @brief  Reset timer aktivitas layar sentuh
+  */
+void GUI_Attendance_NotifyActivity(void);
+
+/**
+  * @brief  Fungsi pembaca riwayat log absensi terakhir dari MicroSD (ATTEND.CSV)
+  * @param  logs Array string buffer untuk menampung baris log
+  * @param  max_logs Jumlah baris log maksimum yang dibaca
+  * @return Jumlah baris log yang berhasil dibaca
+  */
+uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs);
 
 #ifdef __cplusplus
 }
