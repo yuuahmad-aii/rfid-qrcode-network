@@ -102,7 +102,7 @@ static void configure_led(void) {
   led_strip_clear(led_strip);
 
   // Default state: Red (Not connected)
-  set_led_color(50, 0, 0);
+  set_led_color(16, 0, 0);
 }
 
 static void event_handler(void *arg, esp_event_base_t event_base,
@@ -111,14 +111,14 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     esp_wifi_connect();
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
-    set_led_color(50, 0, 0); // Red
+    set_led_color(16, 0, 0); // Red
     uart_send_and_log("WIFI:FAIL\n");
     esp_wifi_connect();
     ESP_LOGI(TAG, "retry to connect to the AP");
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-    set_led_color(0, 0, 50); // Blue (Connected, idle)
+    set_led_color(0, 0, 8); // Dim Blue (Connected, idle low power)
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     uart_send_and_log("WIFI:OK\n");
   }
@@ -185,6 +185,11 @@ void wifi_init_sta(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
 
+  /* Optimalisasi Hemat Daya (Power Save Mode):
+   * Aktifkan Wi-Fi Modem-Sleep sehingga radio RF tidur di sela DTIM beacon (menghemat 70-80% daya idle),
+   * namun koneksi tetap terjalin dan dapat langsung mengirim transaksi HTTP seketika kartu di-tap. */
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
   ESP_LOGI(TAG, "wifi_init_sta finished.");
 }
 
@@ -228,7 +233,7 @@ static void send_api_request(const char *identifier, const char *type) {
   }
 
   ESP_LOGI(TAG, "Sending HTTP request for %s: %s", type, identifier ? identifier : "TEST");
-  set_led_color(50, 50, 0); // Yellow (Sending)
+  set_led_color(20, 20, 0); // Dim Yellow (Sending)
 
   time_t now;
   struct tm timeinfo;
@@ -278,7 +283,7 @@ static void send_api_request(const char *identifier, const char *type) {
       cJSON *result = cJSON_GetObjectItem(response_json, "attendance_result");
       
       if ((success && cJSON_IsTrue(success)) || result != NULL) {
-        set_led_color(0, 50, 0); // Green (Success)
+        set_led_color(0, 20, 0); // Dim Green (Success)
         if (result && cJSON_IsObject(result)) {
            cJSON *id_json = cJSON_GetObjectItem(result, "id");
            cJSON *name_json = cJSON_GetObjectItem(result, "name");
@@ -303,7 +308,7 @@ static void send_api_request(const char *identifier, const char *type) {
            uart_send_and_log("GRANTED:-|-|-\n");
         }
       } else {
-        set_led_color(50, 0, 0); // Red (Failed)
+        set_led_color(20, 0, 0); // Dim Red (Failed)
         cJSON *rejected = cJSON_GetObjectItem(response_json, "rejected");
         if (rejected && cJSON_IsArray(rejected)) {
            cJSON *item = cJSON_GetArrayItem(rejected, 0);
@@ -322,11 +327,11 @@ static void send_api_request(const char *identifier, const char *type) {
       cJSON_Delete(response_json);
     } else {
       uart_send_and_log("DENIED:Parse Error\n");
-      set_led_color(50, 0, 0); // Red
+      set_led_color(20, 0, 0); // Dim Red
     }
   } else {
     ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-    set_led_color(50, 0, 0); // Red (Failed)
+    set_led_color(20, 0, 0); // Dim Red (Failed)
     uart_send_and_log("DENIED:Koneksi Gagal\n");
   }
   esp_http_client_cleanup(client);
@@ -334,7 +339,7 @@ static void send_api_request(const char *identifier, const char *type) {
 
   // Wait 1 second before reverting to idle state
   vTaskDelay(pdMS_TO_TICKS(1000));
-  set_led_color(0, 0, 50); // Blue (Idle)
+  set_led_color(0, 0, 8); // Dim Blue (Idle low power)
 }
 
 static void button_task(void *pvParameters) {

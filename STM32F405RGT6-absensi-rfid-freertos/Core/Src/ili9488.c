@@ -352,3 +352,16 @@ void ILI9488_DrawBitmapLVGL(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, 
     
     ILI9488_CS_HIGH();
 }
+
+void ILI9488_SleepIn(void) {
+    ILI9488_CS_LOW();
+    ILI9488_SendCommand(0x10); // Enter Sleep Mode
+    ILI9488_CS_HIGH();
+}
+
+void ILI9488_SleepOut(void) {
+    ILI9488_CS_LOW();
+    ILI9488_SendCommand(0x11); // Exit Sleep Mode
+    ILI9488_CS_HIGH();
+    HAL_Delay(10);
+}

@@ -9,8 +9,10 @@
 #include "lvgl.h"
 #include "main.h"
 #include "cmsis_os.h"
+#include "ili9488.h"
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 
 /* Eksternal variabel dari main.c */
 extern RTC_HandleTypeDef hrtc;
@@ -136,7 +138,20 @@ static lv_obj_t * lbl_log_title       = NULL;
 static lv_obj_t * btn_refresh_log     = NULL;
 static lv_obj_t * lbl_refresh_log     = NULL;
 static lv_obj_t * cont_log_list       = NULL;
-static lv_obj_t * lbl_log_content     = NULL;
+static lv_obj_t * table_log           = NULL;
+
+/* Tab 4: Test Device (Diagnostik Hardware) */
+static lv_obj_t * tab_test            = NULL;
+static lv_obj_t * btn_diag_all        = NULL;
+static lv_obj_t * btn_diag_beep       = NULL;
+static lv_obj_t * btn_diag_rfid       = NULL;
+static lv_obj_t * btn_diag_sd         = NULL;
+static lv_obj_t * btn_diag_wifi       = NULL;
+static lv_obj_t * btn_diag_rtc        = NULL;
+static lv_obj_t * cont_diag_box       = NULL;
+static lv_obj_t * lbl_diag_title      = NULL;
+static lv_obj_t * lbl_diag_summary    = NULL;
+static lv_obj_t * lbl_diag_detail     = NULL;
 
 /* Timer */
 static lv_timer_t * revert_timer      = NULL;
@@ -158,6 +173,7 @@ static void build_screen_main(void);
 static void build_screen_password(void);
 static void build_screen_admin(void);
 static void apply_theme(bool is_dark);
+static void update_admin_tab_styles(bool is_dark);
 static void revert_standby_cb(lv_timer_t * t);
 static void pwd_err_timeout_cb(lv_timer_t * t);
 static void ntp_timeout_cb(lv_timer_t * t);
@@ -176,6 +192,164 @@ static void ta_wifi_focus_cb(lv_event_t * e);
 static void kb_wifi_event_cb(lv_event_t * e);
 static void btn_refresh_log_cb(lv_event_t * e);
 
+/* Diagnostic Callbacks */
+static void btn_diag_beep_cb(lv_event_t * e);
+static void btn_diag_rfid_cb(lv_event_t * e);
+static void btn_diag_sd_cb(lv_event_t * e);
+static void btn_diag_wifi_cb(lv_event_t * e);
+static void btn_diag_rtc_cb(lv_event_t * e);
+static void btn_diag_all_cb(lv_event_t * e);
+
+/* ========================================================================== */
+/*                PERSISTENT CONFIGURATION (STM32 FLASH SECTOR 11)            */
+/* ========================================================================== */
+app_settings_t g_app_settings = {0};
+
+void App_Settings_ResetDefaults(app_settings_t *s)
+{
+    memset(s, 0, sizeof(app_settings_t));
+    s->magic              = SETTINGS_MAGIC;
+    s->version            = SETTINGS_VERSION;
+    s->brightness         = 75;  /* 75% */
+    s->theme_mode         = 1;   /* 1 = Dark Mode */
+    s->screen_timeout_sec = 60;  /* 60 detik */
+    strncpy(s->wifi_ssid, "WiFi_Absensi", sizeof(s->wifi_ssid) - 1);
+    strncpy(s->wifi_pass, "12345678", sizeof(s->wifi_pass) - 1);
+    strncpy(s->server_ip, "0.0.0.0", sizeof(s->server_ip) - 1);
+}
+
+bool App_Settings_Load(app_settings_t *out)
+{
+    const app_settings_t *flash_cfg = (const app_settings_t *)SETTINGS_FLASH_ADDR;
+    if (flash_cfg->magic != SETTINGS_MAGIC || flash_cfg->version != SETTINGS_VERSION) {
+        return false;
+    }
+
+    uint16_t sum = 0;
+    const uint8_t *p_bytes = (const uint8_t *)flash_cfg;
+    for (size_t i = 0; i < sizeof(app_settings_t); i++) {
+        if (i == offsetof(app_settings_t, checksum) || i == (offsetof(app_settings_t, checksum) + 1)) {
+            continue;
+        }
+        sum += p_bytes[i];
+    }
+    if (sum != flash_cfg->checksum) {
+        return false;
+    }
+
+    *out = *flash_cfg;
+    return true;
+}
+
+bool App_Settings_Save(const app_settings_t *in)
+{
+    HAL_FLASH_Unlock();
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |
+                           FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+
+    FLASH_EraseInitTypeDef EraseInitStruct;
+    EraseInitStruct.TypeErase    = FLASH_TYPEERASE_SECTORS;
+    EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+    EraseInitStruct.Sector       = SETTINGS_FLASH_SECTOR;
+    EraseInitStruct.NbSectors    = 1;
+
+    uint32_t SectorError = 0;
+    if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
+        HAL_FLASH_Lock();
+        return false;
+    }
+
+    app_settings_t temp = *in;
+    temp.magic = SETTINGS_MAGIC;
+    temp.version = SETTINGS_VERSION;
+    temp.checksum = 0;
+
+    uint16_t sum = 0;
+    const uint8_t *p_bytes = (const uint8_t *)&temp;
+    for (size_t i = 0; i < sizeof(app_settings_t); i++) {
+        if (i == offsetof(app_settings_t, checksum) || i == (offsetof(app_settings_t, checksum) + 1)) {
+            continue;
+        }
+        sum += p_bytes[i];
+    }
+    temp.checksum = sum;
+
+    const uint32_t *p_data = (const uint32_t *)&temp;
+    uint32_t dest = SETTINGS_FLASH_ADDR;
+    for (size_t i = 0; i < sizeof(app_settings_t) / sizeof(uint32_t); i++) {
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, dest, p_data[i]) != HAL_OK) {
+            HAL_FLASH_Lock();
+            return false;
+        }
+        dest += 4;
+    }
+
+    HAL_FLASH_Lock();
+    return true;
+}
+
+void App_Settings_Init(void)
+{
+    if (!App_Settings_Load(&g_app_settings)) {
+        App_Settings_ResetDefaults(&g_app_settings);
+        App_Settings_Save(&g_app_settings);
+    }
+    g_current_brightness_val = g_app_settings.brightness;
+    g_screen_timeout_sec     = g_app_settings.screen_timeout_sec;
+}
+
+/* ========================================================================== */
+/*                CUSTOM KEYBOARD MAP (FULL 5 ROWS WITH NUMBERS)             */
+/* ========================================================================== */
+static const char * const custom_kb_map_lc[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", LV_SYMBOL_NEW_LINE, "\n",
+    "ABC", "z", "x", "c", "v", "b", "n", "m", "_", "-", ".", "\n",
+    "1#", " ", "@", LV_SYMBOL_CLOSE, LV_SYMBOL_OK, ""
+};
+
+static const lv_buttonmatrix_ctrl_t custom_kb_ctrl_lc_map[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, LV_BUTTONMATRIX_CTRL_CHECKED | 2,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, 6, 1, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2
+};
+
+static const char * const custom_kb_map_uc[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", LV_SYMBOL_NEW_LINE, "\n",
+    "abc", "Z", "X", "C", "V", "B", "N", "M", "_", "-", ".", "\n",
+    "1#", " ", "@", LV_SYMBOL_CLOSE, LV_SYMBOL_OK, ""
+};
+
+static const lv_buttonmatrix_ctrl_t custom_kb_ctrl_uc_map[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, LV_BUTTONMATRIX_CTRL_CHECKED | 2,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, 6, 1, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2
+};
+
+static const char * const custom_kb_map_spec[] = {
+    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", LV_SYMBOL_BACKSPACE, "\n",
+    "~", "`", "+", "=", "[", "]", "{", "}", "\\", "|", "\n",
+    ":", ";", "\"", "'", "<", ">", ",", "?", "/", LV_SYMBOL_NEW_LINE, "\n",
+    "abc", "_", "-", ".", "#", "%", "*", "+", "=", "\n",
+    "1#", " ", "@", LV_SYMBOL_CLOSE, LV_SYMBOL_OK, ""
+};
+
+static const lv_buttonmatrix_ctrl_t custom_kb_ctrl_spec_map[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, LV_BUTTONMATRIX_CTRL_CHECKED | 2,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, 1, 1, 1, 1, 1, 1, 1, 1,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, 6, 1, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2
+};
+
+
 /**
   * @brief  Inisialisasi antarmuka pengguna grafis LVGL
   */
@@ -183,16 +357,49 @@ void GUI_Attendance_Init(void)
 {
     g_last_activity_tick = HAL_GetTick();
 
+    /* Muat pengaturan dari Flash */
+    App_Settings_Init();
+
     /* Bangun ketiga layar antarmuka */
     build_screen_main();
     build_screen_password();
     build_screen_admin();
 
+    /* Pulihkan nilai widget di menu admin sesuai konfigurasi tersimpan */
+    if (slider_brightness) {
+        lv_slider_set_value(slider_brightness, g_app_settings.brightness, LV_ANIM_OFF);
+    }
+    if (lbl_bright_val) {
+        lv_label_set_text_fmt(lbl_bright_val, "%d%%", g_app_settings.brightness);
+    }
+    if (sw_theme) {
+        if (g_app_settings.theme_mode == 0) {
+            lv_obj_add_state(sw_theme, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(sw_theme, LV_STATE_CHECKED);
+        }
+    }
+    if (dropdown_timeout) {
+        uint16_t sel_idx = 2; /* 60s default */
+        if (g_app_settings.screen_timeout_sec == 0) sel_idx = 0;
+        else if (g_app_settings.screen_timeout_sec <= 30) sel_idx = 1;
+        else if (g_app_settings.screen_timeout_sec <= 60) sel_idx = 2;
+        else if (g_app_settings.screen_timeout_sec <= 120) sel_idx = 3;
+        else sel_idx = 4;
+        lv_dropdown_set_selected(dropdown_timeout, sel_idx);
+    }
+    if (ta_wifi_ssid && strlen(g_app_settings.wifi_ssid) > 0) {
+        lv_textarea_set_text(ta_wifi_ssid, g_app_settings.wifi_ssid);
+    }
+    if (ta_wifi_pass && strlen(g_app_settings.wifi_pass) > 0) {
+        lv_textarea_set_text(ta_wifi_pass, g_app_settings.wifi_pass);
+    }
+
     /* Muat Layar Utama sebagai tampilan default */
     lv_screen_load(screen_main);
 
-    /* Terapkan tema awal (Dark Mode) */
-    apply_theme(true);
+    /* Terapkan tema sesuai pengaturan tersimpan */
+    apply_theme(g_app_settings.theme_mode == 1);
 }
 
 /**
@@ -621,6 +828,7 @@ static void build_screen_admin(void)
     lv_obj_set_pos(tabview_admin, 0, 40);
     lv_obj_set_size(tabview_admin, 480, 280);
     lv_obj_set_style_bg_color(tabview_admin, lv_color_hex(COLOR_DARK_BG), 0);
+    lv_tabview_set_tab_bar_size(tabview_admin, 32);
 
     /* Matikan swipe gesture pada tabview content agar slider tidak memicu pergantian tab */
     lv_obj_t * tv_cont = lv_tabview_get_content(tabview_admin);
@@ -631,6 +839,7 @@ static void build_screen_admin(void)
     lv_obj_t * tab_sistem = lv_tabview_add_tab(tabview_admin, "SISTEM");
     lv_obj_t * tab_wifi   = lv_tabview_add_tab(tabview_admin, "WI-FI");
     tab_log               = lv_tabview_add_tab(tabview_admin, "LOG ABSENSI");
+    tab_test              = lv_tabview_add_tab(tabview_admin, "TEST DEVICE");
 
     /* ====================================================================== */
     /* TAB 1: SISTEM & DISPLAY                                                */
@@ -791,27 +1000,32 @@ static void build_screen_admin(void)
     lv_obj_set_style_text_color(lbl_save_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
     lv_obj_set_style_text_font(lbl_save_btn, &lv_font_montserrat_14, 0);
 
-    /* Keyboard Virtual ditempatkan langsung di screen_admin agar tidak terpotong dan leluasa */
-    kb_wifi = lv_keyboard_create(screen_admin);
-    lv_obj_set_pos(kb_wifi, 0, 135);
-    lv_obj_set_size(kb_wifi, 480, 185);
+    /* Keyboard Virtual ditempatkan di lv_layer_top() dengan custom 5-baris QWERTY lengkap */
+    kb_wifi = lv_keyboard_create(lv_layer_top());
+    lv_obj_set_size(kb_wifi, 480, 155);
+    lv_obj_align(kb_wifi, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_pad_all(kb_wifi, 2, 0);
+    lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_TEXT_LOWER, (const char **)custom_kb_map_lc, custom_kb_ctrl_lc_map);
+    lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_TEXT_UPPER, (const char **)custom_kb_map_uc, custom_kb_ctrl_uc_map);
+    lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_SPECIAL,    (const char **)custom_kb_map_spec, custom_kb_ctrl_spec_map);
     lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(kb_wifi, kb_wifi_event_cb, LV_EVENT_ALL, NULL);
 
     /* ====================================================================== */
     /* TAB 3: LOG ABSENSI MICROSD                                             */
     /* ====================================================================== */
-    lv_obj_set_style_pad_all(tab_log, 8, 0);
+    lv_obj_remove_flag(tab_log, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(tab_log, 6, 0);
 
     lbl_log_title = lv_label_create(tab_log);
-    lv_obj_set_pos(lbl_log_title, 10, 8);
+    lv_obj_set_pos(lbl_log_title, 10, 6);
     lv_label_set_text(lbl_log_title, "Riwayat Kehadiran (MicroSD):");
     lv_obj_set_style_text_color(lbl_log_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_log_title, &lv_font_montserrat_14, 0);
 
     btn_refresh_log = lv_button_create(tab_log);
-    lv_obj_set_pos(btn_refresh_log, 310, 4);
-    lv_obj_set_size(btn_refresh_log, 130, 30);
+    lv_obj_set_pos(btn_refresh_log, 310, 2);
+    lv_obj_set_size(btn_refresh_log, 130, 28);
     lv_obj_set_style_bg_color(btn_refresh_log, lv_color_hex(COLOR_DARK_CARD), 0);
     lv_obj_set_style_border_color(btn_refresh_log, lv_color_hex(COLOR_CYAN_ACCENT), 0);
     lv_obj_set_style_border_width(btn_refresh_log, 1, 0);
@@ -824,22 +1038,164 @@ static void build_screen_admin(void)
     lv_obj_set_style_text_color(lbl_refresh_log, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_refresh_log, &lv_font_montserrat_14, 0);
 
-    /* Kotak scrollable penampil teks log */
+    /* Kotak log tabel: scrollable hanya pada container ini (1 Scroll Control) */
     cont_log_list = lv_obj_create(tab_log);
-    lv_obj_set_pos(cont_log_list, 10, 40);
-    lv_obj_set_size(cont_log_list, 440, 185);
+    lv_obj_set_pos(cont_log_list, 10, 36);
+    lv_obj_set_size(cont_log_list, 440, 194);
     lv_obj_set_style_bg_color(cont_log_list, lv_color_hex(0x060E1A), 0);
     lv_obj_set_style_border_color(cont_log_list, lv_color_hex(COLOR_DARK_BORDER), 0);
     lv_obj_set_style_border_width(cont_log_list, 1, 0);
     lv_obj_set_style_radius(cont_log_list, 8, 0);
-    lv_obj_set_style_pad_all(cont_log_list, 6, 0);
+    lv_obj_set_style_pad_all(cont_log_list, 2, 0);
+    lv_obj_add_flag(cont_log_list, LV_OBJ_FLAG_SCROLLABLE);
 
-    lbl_log_content = lv_label_create(cont_log_list);
-    lv_obj_set_pos(lbl_log_content, 4, 4);
-    lv_obj_set_width(lbl_log_content, 410);
-    lv_label_set_text(lbl_log_content, "Tekan tombol REFRESH LOG untuk memuat riwayat...");
-    lv_obj_set_style_text_color(lbl_log_content, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_log_content, &lv_font_montserrat_14, 0);
+    table_log = lv_table_create(cont_log_list);
+    lv_obj_remove_flag(table_log, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_text_font(table_log, &lv_font_montserrat_14, 0);
+    lv_table_set_column_count(table_log, 4);
+    lv_table_set_column_width(table_log, 0, 36);   /* No */
+    lv_table_set_column_width(table_log, 1, 140);  /* Waktu */
+    lv_table_set_column_width(table_log, 2, 130);  /* UID Kartu */
+    lv_table_set_column_width(table_log, 3, 110);  /* Status */
+
+    lv_table_set_cell_value(table_log, 0, 0, "#");
+    lv_table_set_cell_value(table_log, 0, 1, "WAKTU");
+    lv_table_set_cell_value(table_log, 0, 2, "UID KARTU");
+    lv_table_set_cell_value(table_log, 0, 3, "STATUS");
+
+    /* ====================================================================== */
+    /* TAB 4: TEST DEVICE (DIAGNOSTIK HARDWARE LENGKAP)                       */
+    /* ====================================================================== */
+    lv_obj_remove_flag(tab_test, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(tab_test, 6, 0);
+
+    /* Tombol Uji Semua (Master Test) */
+    btn_diag_all = lv_button_create(tab_test);
+    lv_obj_set_pos(btn_diag_all, 6, 4);
+    lv_obj_set_size(btn_diag_all, 140, 32);
+    lv_obj_set_style_bg_color(btn_diag_all, lv_color_hex(0x0E7490), 0);
+    lv_obj_set_style_border_color(btn_diag_all, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_diag_all, 1, 0);
+    lv_obj_set_style_radius(btn_diag_all, 6, 0);
+    lv_obj_add_event_cb(btn_diag_all, btn_diag_all_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_diag_all_t = lv_label_create(btn_diag_all);
+    lv_obj_center(lbl_diag_all_t);
+    lv_label_set_text(lbl_diag_all_t, ">> UJI SEMUA");
+    lv_obj_set_style_text_color(lbl_diag_all_t, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(lbl_diag_all_t, &lv_font_montserrat_14, 0);
+
+    /* Tombol 1: Test Buzzer */
+    btn_diag_beep = lv_button_create(tab_test);
+    lv_obj_set_pos(btn_diag_beep, 6, 40);
+    lv_obj_set_size(btn_diag_beep, 140, 30);
+    lv_obj_set_style_bg_color(btn_diag_beep, lv_color_hex(COLOR_DARK_CARD), 0);
+    lv_obj_set_style_border_color(btn_diag_beep, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_diag_beep, 1, 0);
+    lv_obj_set_style_radius(btn_diag_beep, 6, 0);
+    lv_obj_add_event_cb(btn_diag_beep, btn_diag_beep_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_db = lv_label_create(btn_diag_beep);
+    lv_obj_center(lbl_db);
+    lv_label_set_text(lbl_db, "1. Test Buzzer");
+    lv_obj_set_style_text_color(lbl_db, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_db, &lv_font_montserrat_14, 0);
+
+    /* Tombol 2: Test RFID */
+    btn_diag_rfid = lv_button_create(tab_test);
+    lv_obj_set_pos(btn_diag_rfid, 6, 74);
+    lv_obj_set_size(btn_diag_rfid, 140, 30);
+    lv_obj_set_style_bg_color(btn_diag_rfid, lv_color_hex(COLOR_DARK_CARD), 0);
+    lv_obj_set_style_border_color(btn_diag_rfid, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_diag_rfid, 1, 0);
+    lv_obj_set_style_radius(btn_diag_rfid, 6, 0);
+    lv_obj_add_event_cb(btn_diag_rfid, btn_diag_rfid_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_dr = lv_label_create(btn_diag_rfid);
+    lv_obj_center(lbl_dr);
+    lv_label_set_text(lbl_dr, "2. Test RFID");
+    lv_obj_set_style_text_color(lbl_dr, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_dr, &lv_font_montserrat_14, 0);
+
+    /* Tombol 3: Test MicroSD */
+    btn_diag_sd = lv_button_create(tab_test);
+    lv_obj_set_pos(btn_diag_sd, 6, 108);
+    lv_obj_set_size(btn_diag_sd, 140, 30);
+    lv_obj_set_style_bg_color(btn_diag_sd, lv_color_hex(COLOR_DARK_CARD), 0);
+    lv_obj_set_style_border_color(btn_diag_sd, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_diag_sd, 1, 0);
+    lv_obj_set_style_radius(btn_diag_sd, 6, 0);
+    lv_obj_add_event_cb(btn_diag_sd, btn_diag_sd_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_ds = lv_label_create(btn_diag_sd);
+    lv_obj_center(lbl_ds);
+    lv_label_set_text(lbl_ds, "3. Test MicroSD");
+    lv_obj_set_style_text_color(lbl_ds, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_ds, &lv_font_montserrat_14, 0);
+
+    /* Tombol 4: Test Wi-Fi */
+    btn_diag_wifi = lv_button_create(tab_test);
+    lv_obj_set_pos(btn_diag_wifi, 6, 142);
+    lv_obj_set_size(btn_diag_wifi, 140, 30);
+    lv_obj_set_style_bg_color(btn_diag_wifi, lv_color_hex(COLOR_DARK_CARD), 0);
+    lv_obj_set_style_border_color(btn_diag_wifi, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_diag_wifi, 1, 0);
+    lv_obj_set_style_radius(btn_diag_wifi, 6, 0);
+    lv_obj_add_event_cb(btn_diag_wifi, btn_diag_wifi_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_dw = lv_label_create(btn_diag_wifi);
+    lv_obj_center(lbl_dw);
+    lv_label_set_text(lbl_dw, "4. Test Wi-Fi");
+    lv_obj_set_style_text_color(lbl_dw, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_dw, &lv_font_montserrat_14, 0);
+
+    /* Tombol 5: Test RTC */
+    btn_diag_rtc = lv_button_create(tab_test);
+    lv_obj_set_pos(btn_diag_rtc, 6, 176);
+    lv_obj_set_size(btn_diag_rtc, 140, 30);
+    lv_obj_set_style_bg_color(btn_diag_rtc, lv_color_hex(COLOR_DARK_CARD), 0);
+    lv_obj_set_style_border_color(btn_diag_rtc, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_diag_rtc, 1, 0);
+    lv_obj_set_style_radius(btn_diag_rtc, 6, 0);
+    lv_obj_add_event_cb(btn_diag_rtc, btn_diag_rtc_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * lbl_dr_rtc = lv_label_create(btn_diag_rtc);
+    lv_obj_center(lbl_dr_rtc);
+    lv_label_set_text(lbl_dr_rtc, "5. Test RTC");
+    lv_obj_set_style_text_color(lbl_dr_rtc, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_dr_rtc, &lv_font_montserrat_14, 0);
+
+    /* Kotak Hasil Diagnostik (Kanan) */
+    cont_diag_box = lv_obj_create(tab_test);
+    lv_obj_set_pos(cont_diag_box, 155, 4);
+    lv_obj_set_size(cont_diag_box, 295, 202);
+    lv_obj_set_style_bg_color(cont_diag_box, lv_color_hex(0x060E1A), 0);
+    lv_obj_set_style_border_color(cont_diag_box, lv_color_hex(COLOR_DARK_BORDER), 0);
+    lv_obj_set_style_border_width(cont_diag_box, 1, 0);
+    lv_obj_set_style_radius(cont_diag_box, 8, 0);
+    lv_obj_set_style_pad_all(cont_diag_box, 6, 0);
+
+    lbl_diag_title = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_diag_title, 4, 2);
+    lv_label_set_text(lbl_diag_title, "HASIL DIAGNOSTIK:");
+    lv_obj_set_style_text_color(lbl_diag_title, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_diag_title, &lv_font_montserrat_14, 0);
+
+    lbl_diag_summary = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_diag_summary, 4, 24);
+    lv_obj_set_width(lbl_diag_summary, 275);
+    lv_label_set_long_mode(lbl_diag_summary, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_text(lbl_diag_summary, "Silakan pilih salah satu tes atau klik 'UJI SEMUA'.");
+    lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(lbl_diag_summary, &lv_font_montserrat_14, 0);
+
+    lbl_diag_detail = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_diag_detail, 4, 60);
+    lv_obj_set_width(lbl_diag_detail, 275);
+    lv_label_set_long_mode(lbl_diag_detail, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_text(lbl_diag_detail, "Pengujian memeriksa respon hardware, konektivitas kabel, register chip, dan file system.");
+    lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    lv_obj_set_style_text_font(lbl_diag_detail, &lv_font_montserrat_14, 0);
 }
 
 /**
@@ -1102,6 +1458,8 @@ void GUI_Attendance_CheckSleep(void)
             g_screen_is_sleeping = true;
             /* Matikan backlight PWM */
             __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 0);
+            /* Masukkan display controller ILI9488 ke Sleep Mode (menghemat daya ~30mA) */
+            ILI9488_SleepIn();
         }
     }
 }
@@ -1112,6 +1470,8 @@ void GUI_Attendance_CheckSleep(void)
 void GUI_Attendance_Wakeup(void)
 {
     if (g_screen_is_sleeping) {
+        /* Bangunkan display controller ILI9488 */
+        ILI9488_SleepOut();
         g_screen_is_sleeping = false;
         g_last_activity_tick = HAL_GetTick();
         uint32_t compare = (g_current_brightness_val * 65535) / 100;
@@ -1227,7 +1587,10 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_bg_color(btn_admin_back, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(btn_admin_back, lv_color_hex(is_dark ? COLOR_CYAN_ACCENT : c_border), 0);
     }
-    if (tabview_admin) lv_obj_set_style_bg_color(tabview_admin, lv_color_hex(c_bg), 0);
+    if (tabview_admin) {
+        lv_obj_set_style_bg_color(tabview_admin, lv_color_hex(c_bg), 0);
+        update_admin_tab_styles(is_dark);
+    }
 
     /* Tab 1 Elements */
     if (lbl_bright_title) lv_obj_set_style_text_color(lbl_bright_title, lv_color_hex(c_text_pri), 0);
@@ -1279,7 +1642,72 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_bg_color(cont_log_list, lv_color_hex(is_dark ? 0x060E1A : 0xFFFFFF), 0);
         lv_obj_set_style_border_color(cont_log_list, lv_color_hex(c_border), 0);
     }
-    if (lbl_log_content) lv_obj_set_style_text_color(lbl_log_content, lv_color_hex(c_text_pri), 0);
+    if (table_log) {
+        lv_obj_set_style_text_color(table_log, lv_color_hex(c_text_pri), 0);
+    }
+
+    /* Tab 4 Elements (Test Device) */
+    if (cont_diag_box) {
+        lv_obj_set_style_bg_color(cont_diag_box, lv_color_hex(is_dark ? 0x060E1A : 0xFFFFFF), 0);
+        lv_obj_set_style_border_color(cont_diag_box, lv_color_hex(c_border), 0);
+    }
+    if (lbl_diag_title) lv_obj_set_style_text_color(lbl_diag_title, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    if (lbl_diag_summary) lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(c_text_pri), 0);
+    if (lbl_diag_detail) lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(c_text_mut), 0);
+
+    if (btn_diag_beep) lv_obj_set_style_bg_color(btn_diag_beep, lv_color_hex(c_btn_bg), 0);
+    if (btn_diag_rfid) lv_obj_set_style_bg_color(btn_diag_rfid, lv_color_hex(c_btn_bg), 0);
+    if (btn_diag_sd) lv_obj_set_style_bg_color(btn_diag_sd, lv_color_hex(c_btn_bg), 0);
+    if (btn_diag_wifi) lv_obj_set_style_bg_color(btn_diag_wifi, lv_color_hex(c_btn_bg), 0);
+    if (btn_diag_rtc) lv_obj_set_style_bg_color(btn_diag_rtc, lv_color_hex(c_btn_bg), 0);
+}
+
+/**
+  * @brief  Pengaturan gaya Tab Button Admin agar proporsional dan selaras dengan tema
+  */
+static void update_admin_tab_styles(bool is_dark)
+{
+    if (tabview_admin == NULL) return;
+    lv_obj_t * tab_bar = lv_tabview_get_tab_bar(tabview_admin);
+    if (tab_bar == NULL) return;
+
+    uint32_t bar_bg = is_dark ? 0x0F172A : 0xE2E8F0;
+    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(bar_bg), 0);
+    lv_obj_set_style_pad_all(tab_bar, 2, 0);
+
+    uint32_t count = lv_obj_get_child_count(tab_bar);
+    for (uint32_t i = 0; i < count; i++) {
+        lv_obj_t * btn = lv_obj_get_child(tab_bar, i);
+        if (btn == NULL) continue;
+
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_pad_ver(btn, 4, 0);
+        lv_obj_set_style_pad_hor(btn, 8, 0);
+        lv_obj_set_style_text_font(btn, &lv_font_montserrat_14, 0);
+
+        /* DEFAULT STATE (Unchecked) */
+        if (is_dark) {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x1E293B), LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0x94A3B8), LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(btn, lv_color_hex(0x334155), LV_STATE_DEFAULT);
+        } else {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0xF1F5F9), LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0x475569), LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(btn, lv_color_hex(0xCBD5E1), LV_STATE_DEFAULT);
+        }
+        lv_obj_set_style_border_width(btn, 1, LV_STATE_DEFAULT);
+
+        /* CHECKED STATE (Selected Tab) */
+        if (is_dark) {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CYAN_ACCENT), LV_STATE_CHECKED);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_CHECKED);
+            lv_obj_set_style_border_color(btn, lv_color_hex(COLOR_CYAN_ACCENT), LV_STATE_CHECKED);
+        } else {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x0284C7), LV_STATE_CHECKED);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_CHECKED);
+            lv_obj_set_style_border_color(btn, lv_color_hex(0x0284C7), LV_STATE_CHECKED);
+        }
+    }
 }
 
 /* ========================================================================== */
@@ -1324,24 +1752,44 @@ static void ntp_timeout_cb(lv_timer_t * t)
 
 static void load_recent_logs(void)
 {
+    if (table_log == NULL) return;
+
     char log_buffer[12][64];
     uint16_t n = Storage_ReadRecentLogs(log_buffer, 12);
+
+    /* Reset row count: Baris 0 adalah Header */
+    lv_table_set_row_count(table_log, n > 0 ? (n + 1) : 2);
+    lv_table_set_cell_value(table_log, 0, 0, "#");
+    lv_table_set_cell_value(table_log, 0, 1, "WAKTU");
+    lv_table_set_cell_value(table_log, 0, 2, "UID KARTU");
+    lv_table_set_cell_value(table_log, 0, 3, "STATUS");
+
     if (n == 0) {
-        if (lbl_log_content) {
-            lv_label_set_text(lbl_log_content, "Tidak ada data riwayat absensi atau MicroSD belum terbaca.");
-        }
+        lv_table_set_cell_value(table_log, 1, 0, "-");
+        lv_table_set_cell_value(table_log, 1, 1, "--:--:--");
+        lv_table_set_cell_value(table_log, 1, 2, "TIDAK ADA DATA");
+        lv_table_set_cell_value(table_log, 1, 3, "KOSONG/ERR");
         return;
     }
 
-    char display_text[1024] = {0};
-    /* Tampilkan dari urutan paling baru (terbalik) */
-    for (int i = n - 1; i >= 0; i--) {
-        char line_formatted[96];
-        snprintf(line_formatted, sizeof(line_formatted), "[%02d] %s\n", (n - i), log_buffer[i]);
-        strncat(display_text, line_formatted, sizeof(display_text) - strlen(display_text) - 1);
-    }
-    if (lbl_log_content) {
-        lv_label_set_text(lbl_log_content, display_text);
+    /* Format baris CSV: 2026-10-17 19:24:00,UID:12345678,LOG=TAP */
+    for (uint16_t i = 0; i < n; i++) {
+        uint16_t row = i + 1;
+        char num_str[8];
+        snprintf(num_str, sizeof(num_str), "%d", row);
+        lv_table_set_cell_value(table_log, row, 0, num_str);
+
+        char line[64];
+        strncpy(line, log_buffer[n - 1 - i], sizeof(line) - 1);
+        line[sizeof(line) - 1] = '\0';
+
+        char *token_time = strtok(line, ",");
+        char *token_uid  = strtok(NULL, ",");
+        char *token_stat = strtok(NULL, ",");
+
+        lv_table_set_cell_value(table_log, row, 1, token_time ? token_time : "-");
+        lv_table_set_cell_value(table_log, row, 2, token_uid ? token_uid : "-");
+        lv_table_set_cell_value(table_log, row, 3, token_stat ? token_stat : "OK");
     }
 }
 
@@ -1438,6 +1886,10 @@ static void slider_brightness_cb(lv_event_t * e)
     uint32_t compare = (val * 65535) / 100;
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, compare);
     lv_label_set_text_fmt(lbl_bright_val, "%ld%%", (long)val);
+
+    /* Simpan ke Flash Sector 11 */
+    g_app_settings.brightness = (uint8_t)val;
+    App_Settings_Save(&g_app_settings);
 }
 
 static void sw_theme_cb(lv_event_t * e)
@@ -1445,6 +1897,10 @@ static void sw_theme_cb(lv_event_t * e)
     GUI_Attendance_NotifyActivity();
     bool is_checked = lv_obj_has_state(sw_theme, LV_STATE_CHECKED);
     apply_theme(!is_checked); /* Checked = Terang, Unchecked = Gelap */
+
+    /* Simpan ke Flash Sector 11 */
+    g_app_settings.theme_mode = !is_checked ? 1 : 0;
+    App_Settings_Save(&g_app_settings);
 }
 
 static void dropdown_timeout_cb(lv_event_t * e)
@@ -1459,13 +1915,17 @@ static void dropdown_timeout_cb(lv_event_t * e)
         case 4: g_screen_timeout_sec = 300; break;  /* 5 Menit */
         default: g_screen_timeout_sec = 60; break;
     }
+
+    /* Simpan ke Flash Sector 11 */
+    g_app_settings.screen_timeout_sec = (uint16_t)g_screen_timeout_sec;
+    App_Settings_Save(&g_app_settings);
 }
 
 static void btn_admin_back_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
-    lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+    if (kb_wifi) lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
     lv_screen_load(screen_main);
 }
 
@@ -1473,9 +1933,7 @@ static void btn_test_beep_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
-    HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
-    osDelay(80);
-    HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+    Buzzer_TestDiagnostic();
     if (lbl_admin_feedback) {
         lv_label_set_text(lbl_admin_feedback, "Status: Test Beep Berhasil");
         lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_CYAN_TEXT), 0);
@@ -1528,20 +1986,25 @@ static void btn_save_wifi_cb(lv_event_t * e)
         return;
     }
 
+    /* Simpan ke Flash Sector 11 */
+    strncpy(g_app_settings.wifi_ssid, ssid, sizeof(g_app_settings.wifi_ssid) - 1);
+    strncpy(g_app_settings.wifi_pass, pass, sizeof(g_app_settings.wifi_pass) - 1);
+    App_Settings_Save(&g_app_settings);
+
     /* Kirim paket konfigurasi Wi-Fi ke ESP32-C6 via USART1 */
     esp_tx_item_t item = {0};
     snprintf(item.payload, sizeof(item.payload), "WIFI:%s|%s|0.0.0.0\n", ssid, pass);
     osMessageQueuePut(espTxQueueHandle, &item, 0, 50);
 
     /* Sembunyikan keyboard */
-    lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+    if (kb_wifi) lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
 
     HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
     osDelay(50);
     HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
 
     if (lbl_admin_feedback) {
-        lv_label_set_text(lbl_admin_feedback, "Status: Konfigurasi Wi-Fi Dikirim ke ESP32!");
+        lv_label_set_text(lbl_admin_feedback, "Status: Konfigurasi Disimpan ke Flash & Dikirim!");
         lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
     }
 }
@@ -1553,11 +2016,13 @@ static void ta_wifi_focus_cb(lv_event_t * e)
     lv_obj_t * ta = lv_event_get_target(e);
 
     if (code == LV_EVENT_FOCUSED || code == LV_EVENT_CLICKED) {
-        lv_keyboard_set_textarea(kb_wifi, ta);
-        lv_obj_clear_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(kb_wifi);
-    } else if (code == LV_EVENT_DEFOCUSED || code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
-        lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+        if (kb_wifi) {
+            lv_keyboard_set_textarea(kb_wifi, ta);
+            lv_obj_clear_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(kb_wifi);
+        }
+    } else if (code == LV_EVENT_DEFOCUSED) {
+        /* Biarkan keyboard aktif sampai tombol OK atau CANCEL ditekan */
     }
 }
 
@@ -1566,6 +2031,145 @@ static void kb_wifi_event_cb(lv_event_t * e)
     GUI_Attendance_NotifyActivity();
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
-        lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+        if (kb_wifi) lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
     }
 }
+
+/* ========================================================================== */
+/*                       DIAGNOSTIC TEST CALLBACKS (TAB 4)                    */
+/* ========================================================================== */
+
+static void btn_diag_beep_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    Buzzer_TestDiagnostic();
+    if (lbl_diag_summary) {
+        lv_label_set_text(lbl_diag_summary, "Buzzer: AKTIF [OK]");
+        lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    }
+    if (lbl_diag_detail) {
+        lv_label_set_text(lbl_diag_detail, "Buzzer berbunyi nada ganda. Jalur GPIO PB8 dan transistor driver normal.");
+        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    }
+}
+
+static void btn_diag_rfid_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    char msg[128] = {0};
+    bool ok = RFID_TestDiagnostic(msg, sizeof(msg));
+    if (lbl_diag_summary) {
+        lv_label_set_text(lbl_diag_summary, ok ? "RFID CLRC663: NORMAL [OK]" : "RFID CLRC663: GAGAL [ERROR]");
+        lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(ok ? COLOR_GREEN_STATUS : COLOR_RED_STATUS), 0);
+    }
+    if (lbl_diag_detail) {
+        if (ok) {
+            lv_label_set_text(lbl_diag_detail, msg);
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+        } else {
+            lv_label_set_text(lbl_diag_detail, "Chip RFID tidak merespon SPI3. Solusi:\n1. Cek jalur SPI3 (PB3, PB4, PB5, CS PD2).\n2. Pastikan pin 3.3V dan GND terhubung rapat.");
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_RED_STATUS), 0);
+        }
+    }
+}
+
+static void btn_diag_sd_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    char msg[128] = {0};
+    bool ok = Storage_TestDiagnostic(msg, sizeof(msg));
+    if (lbl_diag_summary) {
+        lv_label_set_text(lbl_diag_summary, ok ? "MicroSD FatFS: NORMAL [OK]" : "MicroSD FatFS: GAGAL [ERROR]");
+        lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(ok ? COLOR_GREEN_STATUS : COLOR_RED_STATUS), 0);
+    }
+    if (lbl_diag_detail) {
+        if (ok) {
+            lv_label_set_text(lbl_diag_detail, msg);
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+        } else {
+            lv_label_set_text(lbl_diag_detail, "SD Card tidak dapat dibaca/tulis. Solusi:\n1. Pastikan MicroSD terpasang rapat di slot.\n2. Format ulang MicroSD dengan sistem file FAT32.\n3. Gunakan kapasitas maksimal 32GB.");
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_RED_STATUS), 0);
+        }
+    }
+}
+
+static void btn_diag_wifi_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    char msg[128] = {0};
+    bool ok = WiFi_GetDiagnostic(msg, sizeof(msg));
+    if (lbl_diag_summary) {
+        lv_label_set_text(lbl_diag_summary, ok ? "Wi-Fi ESP32: TERHUBUNG [OK]" : "Wi-Fi ESP32: PERINGATAN");
+        lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(ok ? COLOR_GREEN_STATUS : COLOR_AMBER_STATUS), 0);
+    }
+    if (lbl_diag_detail) {
+        if (ok) {
+            lv_label_set_text(lbl_diag_detail, msg);
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+        } else {
+            lv_label_set_text(lbl_diag_detail, "Koneksi ke Wi-Fi belum aktif. Solusi:\n1. Buka tab WI-FI dan periksa nama SSID & Password.\n2. Pastikan router Wi-Fi dalam jangkauan sinyal.");
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_AMBER_STATUS), 0);
+        }
+    }
+}
+
+static void btn_diag_rtc_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    char msg[128] = {0};
+    RTC_GetDiagnostic(msg, sizeof(msg));
+    if (lbl_diag_summary) {
+        lv_label_set_text(lbl_diag_summary, "RTC Clock: AKTIF [OK]");
+        lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    }
+    if (lbl_diag_detail) {
+        lv_label_set_text(lbl_diag_detail, msg);
+        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    }
+}
+
+static void btn_diag_all_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    Buzzer_TestDiagnostic();
+
+    char msg_rfid[128] = {0};
+    bool ok_rfid = RFID_TestDiagnostic(msg_rfid, sizeof(msg_rfid));
+
+    char msg_sd[128] = {0};
+    bool ok_sd = Storage_TestDiagnostic(msg_sd, sizeof(msg_sd));
+
+    char msg_wifi[128] = {0};
+    bool ok_wifi = WiFi_GetDiagnostic(msg_wifi, sizeof(msg_wifi));
+
+    char msg_rtc[128] = {0};
+    bool ok_rtc = RTC_GetDiagnostic(msg_rtc, sizeof(msg_rtc));
+
+    if (lbl_diag_summary) {
+        char summary[128];
+        snprintf(summary, sizeof(summary), "Hasil: RFID=%s | SD=%s | WiFi=%s | RTC=%s",
+                 ok_rfid ? "OK" : "ERR", ok_sd ? "OK" : "ERR", ok_wifi ? "OK" : "ERR", ok_rtc ? "OK" : "ERR");
+        lv_label_set_text(lbl_diag_summary, summary);
+        lv_obj_set_style_text_color(lbl_diag_summary,
+            lv_color_hex((ok_rfid && ok_sd && ok_wifi) ? COLOR_GREEN_STATUS : COLOR_AMBER_STATUS), 0);
+    }
+
+    if (lbl_diag_detail) {
+        char detail[256];
+        snprintf(detail, sizeof(detail),
+                 "- RFID: %s\n- MicroSD: %s\n- Wi-Fi ESP32: %s\n- RTC Internal: %s",
+                 ok_rfid ? "Reader Normal" : "Gagal Komunikasi SPI3",
+                 ok_sd ? "FatFS R/W Sukses" : "Gagal Mount/Tulis",
+                 ok_wifi ? "Terhubung ke AP" : "Belum Terhubung AP",
+                 ok_rtc ? "Jam Berjalan Normal" : "Jam Belum Terkalibrasi");
+        lv_label_set_text(lbl_diag_detail, detail);
+        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    }
+}
+

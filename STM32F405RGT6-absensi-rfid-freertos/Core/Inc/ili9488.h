@@ -49,4 +49,8 @@ void ILI9488_WriteStringScaled(uint16_t x, uint16_t y, const char* str, FontDef 
 // LVGL specific functions
 void ILI9488_DrawBitmapLVGL(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, const uint8_t *data);
 
+// Power saving sleep modes
+void ILI9488_SleepIn(void);
+void ILI9488_SleepOut(void);
+
 #endif /* __ILI9488_H */

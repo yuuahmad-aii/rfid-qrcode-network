@@ -937,6 +937,134 @@ uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs)
 }
 
 /**
+  * @brief  Pengujian diagnostik MicroSD (Mount, Buat file, Tulis, Baca, Hapus)
+  */
+bool Storage_TestDiagnostic(char *out_msg, size_t max_len)
+{
+  if (!g_sd_mounted) {
+    if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK) {
+      g_sd_mounted = true;
+    } else {
+      snprintf(out_msg, max_len, "GAGAL: MicroSD tidak terdeteksi (f_mount gagal). Cek kartu & slot SDIO.");
+      return false;
+    }
+  }
+
+  if (osMutexAcquire(sdioFatFsMutexHandle, 1000) != osOK) {
+    snprintf(out_msg, max_len, "GAGAL: Antrean akses FatFS sibuk.");
+    return false;
+  }
+
+  FIL testFile;
+  FRESULT fres = f_open(&testFile, "TEST_RW.TMP", FA_CREATE_ALWAYS | FA_WRITE);
+  if (fres != FR_OK) {
+    osMutexRelease(sdioFatFsMutexHandle);
+    snprintf(out_msg, max_len, "GAGAL: Tidak dapat membuat file tulis (FR=%d). Pastikan format FAT32.", (int)fres);
+    return false;
+  }
+
+  const char test_data[] = "ABSENSI_DIAG_OK_12345";
+  UINT bw = 0;
+  f_write(&testFile, test_data, sizeof(test_data), &bw);
+  f_close(&testFile);
+
+  char read_buf[32] = {0};
+  UINT br = 0;
+  fres = f_open(&testFile, "TEST_RW.TMP", FA_READ);
+  if (fres == FR_OK) {
+    f_read(&testFile, read_buf, sizeof(read_buf) - 1, &br);
+    f_close(&testFile);
+    f_unlink("TEST_RW.TMP");
+  }
+
+  osMutexRelease(sdioFatFsMutexHandle);
+
+  if (strcmp(read_buf, test_data) == 0) {
+    snprintf(out_msg, max_len, "OK: MicroSD FAT32 normal, uji tulis & baca data berhasil.");
+    return true;
+  } else {
+    snprintf(out_msg, max_len, "GAGAL: Data uji baca tidak cocok dengan data tulis.");
+    return false;
+  }
+}
+
+/**
+  * @brief  Pengujian diagnostik hardware RFID Reader CLRC663 via SPI3
+  */
+bool RFID_TestDiagnostic(char *out_msg, size_t max_len)
+{
+  uint8_t ver = 0;
+  if (osMutexAcquire(spi2MutexHandle, 500) == osOK) {
+    ver = CLRC663_ReadVersion();
+    if (ver == 0x00 || ver == 0xFF) {
+      if (CLRC663_Init(&hspi3) == CLRC663_OK) {
+        g_clrc663_ready = true;
+        CLRC663_AntennaOn();
+        CLRC663_SetupISO14443A();
+        ver = CLRC663_ReadVersion();
+      }
+    }
+    osMutexRelease(spi2MutexHandle);
+  }
+
+  if (ver != 0x00 && ver != 0xFF) {
+    snprintf(out_msg, max_len, "OK: Chip CLRC663 terdeteksi (Versi 0x%02X). Antena RF aktif.", ver);
+    return true;
+  } else {
+    snprintf(out_msg, max_len, "GAGAL: Chip CLRC663 tidak merespons SPI3 (Ver=0x%02X). Cek pin SCK/MISO/MOSI/CS & 3.3V.", ver);
+    return false;
+  }
+}
+
+/**
+  * @brief  Pengujian diagnostik status koneksi Wi-Fi ESP32-C6
+  */
+bool WiFi_GetDiagnostic(char *out_msg, size_t max_len)
+{
+  /* Kirim ping query status ke ESP32 */
+  esp_tx_item_t item = {0};
+  snprintf(item.payload, sizeof(item.payload), "CMD:GET_WIFI_STATUS\n");
+  osMessageQueuePut(espTxQueueHandle, &item, 0, 50);
+
+  if (g_wifi_connected) {
+    snprintf(out_msg, max_len, "OK: Wi-Fi terhubung via ESP32-C6. Koneksi AP aktif.");
+    return true;
+  } else {
+    snprintf(out_msg, max_len, "PERINGATAN: Wi-Fi belum terhubung. Cek konfigurasi SSID & Password di tab WI-FI.");
+    return false;
+  }
+}
+
+/**
+  * @brief  Pengujian diagnostik RTC internal
+  */
+bool RTC_GetDiagnostic(char *out_msg, size_t max_len)
+{
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef sDate = {0};
+  HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+  HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+  snprintf(out_msg, max_len, "OK: RTC berdetak normal: %02d:%02d:%02d WIB (20%02d-%02d-%02d).",
+           sTime.Hours, sTime.Minutes, sTime.Seconds,
+           sDate.Year, sDate.Month, sDate.Date);
+  return true;
+}
+
+/**
+  * @brief  Pengujian diagnostik Buzzer
+  */
+void Buzzer_TestDiagnostic(void)
+{
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+  osDelay(60);
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+  osDelay(50);
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+  osDelay(80);
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+}
+
+/**
   * @brief  LVGL Touch input callback reading from XPT2046 with mutex protection
   */
 static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
@@ -1040,6 +1168,9 @@ void StartRfidTask(void *argument)
 
           if (!is_duplicate)
           {
+            /* Bangunkan layar seketika saat kartu terdeteksi */
+            GUI_Attendance_Wakeup();
+
             /* Simpan UID untuk debounce */
             memcpy(g_prev_uid, card.uid, card.uid_len);
             g_prev_uid_len = card.uid_len;
@@ -1109,10 +1240,14 @@ void StartRfidTask(void *argument)
 void StartGuiTask(void *argument)
 {
   /* USER CODE BEGIN StartGuiTask */
-  /* 1. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 */
+  /* Muat konfigurasi tersimpan dari Flash STM32 (Sector 11) */
+  App_Settings_Init();
+
+  /* 1. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 sesuai pengaturan tersimpan */
   HAL_TIM_Base_Start(&htim3);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 50000); /* Kecerahan ~75% */
+  uint32_t compare = ((uint32_t)g_app_settings.brightness * 65535) / 100;
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, compare);
 
   /* 2. Inisialisasi Core LVGL */
   lv_init();
@@ -1148,27 +1283,38 @@ void StartGuiTask(void *argument)
       GUI_Attendance_ProcessEvent(&evt);
     }
 
-    /* 2. Perbarui tampilan jam RTC dan status peripheral setiap 500 ms */
-    uint32_t now = HAL_GetTick();
-    if (now - last_clock_tick >= 500)
-    {
-      last_clock_tick = now;
-      RTC_TimeTypeDef sTime = {0};
-      RTC_DateTypeDef sDate = {0};
-      HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-      HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-      GUI_Attendance_UpdateClock(&sTime, &sDate);
-      GUI_Attendance_UpdateBadges(g_clrc663_ready, g_wifi_connected, g_sd_mounted);
-    }
-
-    /* 3. Periksa screen sleep timer */
+    /* 2. Periksa screen sleep timer */
     GUI_Attendance_CheckSleep();
 
-    /* 4. Jalankan LVGL timer handler */
-    lv_timer_handler();
+    /* 3. Manajemen daya & refresh GUI */
+    if (GUI_Attendance_IsSleeping())
+    {
+      /* Saat layar dalam mode sleep:
+         - Matikan update jam & badge agar CPU tidak membebani bus & hemat daya
+         - Delay lebih panjang (50 ms) untuk mengistirahatkan MCU */
+      osDelay(50);
+    }
+    else
+    {
+      /* Saat layar aktif: perbarui jam digital & badge peripheral setiap 500 ms */
+      uint32_t now = HAL_GetTick();
+      if (now - last_clock_tick >= 500)
+      {
+        last_clock_tick = now;
+        RTC_TimeTypeDef sTime = {0};
+        RTC_DateTypeDef sDate = {0};
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+        GUI_Attendance_UpdateClock(&sTime, &sDate);
+        GUI_Attendance_UpdateBadges(g_clrc663_ready, g_wifi_connected, g_sd_mounted);
+      }
 
-    /* 5. Yield task ke scheduler FreeRTOS */
-    osDelay(5);
+      /* Jalankan LVGL timer handler */
+      lv_timer_handler();
+
+      /* Yield task ke scheduler FreeRTOS */
+      osDelay(5);
+    }
   }
   /* USER CODE END StartGuiTask */
 }

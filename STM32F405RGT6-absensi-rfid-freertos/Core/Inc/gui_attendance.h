@@ -111,6 +111,43 @@ void GUI_Attendance_NotifyActivity(void);
   */
 uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs);
 
+/* ========================================================================== */
+/*                PERSISTENT CONFIGURATION (STM32 FLASH SECTOR 11)            */
+/* ========================================================================== */
+#define SETTINGS_FLASH_SECTOR       FLASH_SECTOR_11
+#define SETTINGS_FLASH_ADDR         0x080E0000U
+#define SETTINGS_MAGIC              0xAA55F405U
+#define SETTINGS_VERSION            1
+
+typedef struct {
+    uint32_t magic;              /* 0xAA55F405 */
+    uint16_t version;            /* Version 1 */
+    uint16_t checksum;           /* Checksum */
+    uint8_t  brightness;         /* 10 - 100 (%) */
+    uint8_t  theme_mode;         /* 1 = Dark Mode, 0 = Light Mode */
+    uint16_t screen_timeout_sec; /* 0 (Never), 30, 60, 120, 300 */
+    char     wifi_ssid[34];      /* Wi-Fi SSID string */
+    char     wifi_pass[66];      /* Wi-Fi Password string */
+    char     server_ip[16];      /* Server IP if needed */
+    uint8_t  reserved[134];      /* Padding to 256 bytes for future expansion */
+} app_settings_t;
+
+extern app_settings_t g_app_settings;
+
+void App_Settings_Init(void);
+bool App_Settings_Load(app_settings_t *out_settings);
+bool App_Settings_Save(const app_settings_t *in_settings);
+void App_Settings_ResetDefaults(app_settings_t *settings);
+
+/* ========================================================================== */
+/*                       HARDWARE DIAGNOSTIC TESTS                            */
+/* ========================================================================== */
+bool Storage_TestDiagnostic(char *out_msg, size_t max_len);
+bool RFID_TestDiagnostic(char *out_msg, size_t max_len);
+bool WiFi_GetDiagnostic(char *out_msg, size_t max_len);
+bool RTC_GetDiagnostic(char *out_msg, size_t max_len);
+void Buzzer_TestDiagnostic(void);
+
 #ifdef __cplusplus
 }
 #endif
