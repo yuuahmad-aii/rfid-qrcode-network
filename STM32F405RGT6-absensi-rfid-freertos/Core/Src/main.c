@@ -1,20 +1,20 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2026 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -24,57 +24,58 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "FreeRTOS.h"
-#include "task.h"
-#include "ili9488.h"
-#include "xpt2046.h"
 #include "clrc663.h"
 #include "fonts.h"
+#include "gui_attendance.h"
+#include "ili9488.h"
+#include "lvgl.h"
+#include "task.h"
+#include "xpt2046.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdbool.h>
-#include "lvgl.h"
-#include "gui_attendance.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
 typedef struct {
-    uint32_t timestamp;       /* Unix or custom timestamp (4 bytes) */
-    uint8_t  year;            /* Year - 2000 (1 byte) */
-    uint8_t  month;           /* Month 1-12 (1 byte) */
-    uint8_t  date;            /* Day of month 1-31 (1 byte) */
-    uint8_t  hours;           /* Hours 0-23 (1 byte) */
-    uint8_t  minutes;         /* Minutes 0-59 (1 byte) */
-    uint8_t  seconds;         /* Seconds 0-59 (1 byte) */
-    uint8_t  uid_len;         /* Length of UID (1 byte) */
-    uint8_t  uid[10];         /* Card UID (10 bytes) */
-    char     log_msg[44];     /* Text log details or remark (44 bytes) */
-} sd_log_item_t;              /* Exactly 64 bytes (matches sdLogQueue item size) */
+  uint32_t timestamp; /* Unix or custom timestamp (4 bytes) */
+  uint8_t year;       /* Year - 2000 (1 byte) */
+  uint8_t month;      /* Month 1-12 (1 byte) */
+  uint8_t date;       /* Day of month 1-31 (1 byte) */
+  uint8_t hours;      /* Hours 0-23 (1 byte) */
+  uint8_t minutes;    /* Minutes 0-59 (1 byte) */
+  uint8_t seconds;    /* Seconds 0-59 (1 byte) */
+  uint8_t uid_len;    /* Length of UID (1 byte) */
+  uint8_t uid[10];    /* Card UID (10 bytes) */
+  char log_msg[44];   /* Text log details or remark (44 bytes) */
+} sd_log_item_t;      /* Exactly 64 bytes (matches sdLogQueue item size) */
 
 #ifndef ESP_TX_ITEM_DEFINED
 #define ESP_TX_ITEM_DEFINED
 typedef struct {
-    char payload[64];         /* Formatted string packet to ESP32 (64 bytes) */
-} esp_tx_item_t;              /* Exactly 64 bytes (matches espTxQueue item size) */
+  char payload[64]; /* Formatted string packet to ESP32 (64 bytes) */
+} esp_tx_item_t;    /* Exactly 64 bytes (matches espTxQueue item size) */
 #endif
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* Color Palette for Modern Glassmorphism UI */
-#define COLOR_BG            0x0821   /* Dark Charcoal / Deep Navy Background */
-#define COLOR_HEADER_BG     0x10A2   /* Slate Header Background */
-#define COLOR_PANEL_BG      0x1082   /* Dark Slate Card Container */
-#define COLOR_BORDER_CYAN   0x05BF   /* Glowing Neon Cyan Border */
-#define COLOR_POPUP_BG      0x0862   /* Deep Indigo Pop-up Modal */
-#define COLOR_ACCENT_GREEN  0x07E0   /* Emerald Green Status */
-#define COLOR_ACCENT_RED    0xF800   /* Vivid Coral Red Error */
-#define COLOR_ACCENT_YELLOW 0xFFE0   /* Warm Amber Clock / Highlights */
-#define COLOR_TEXT_WHITE    0xFFFF   /* Crisp White */
-#define COLOR_TEXT_MUTED    0x8410   /* Medium Muted Grey */
-#define COLOR_BTN_BG        0x1904   /* Slate Button Fill */
-#define COLOR_BTN_BORDER    0x07FF   /* Cyan Button Outline */
+#define COLOR_BG 0x0821            /* Dark Charcoal / Deep Navy Background */
+#define COLOR_HEADER_BG 0x10A2     /* Slate Header Background */
+#define COLOR_PANEL_BG 0x1082      /* Dark Slate Card Container */
+#define COLOR_BORDER_CYAN 0x05BF   /* Glowing Neon Cyan Border */
+#define COLOR_POPUP_BG 0x0862      /* Deep Indigo Pop-up Modal */
+#define COLOR_ACCENT_GREEN 0x07E0  /* Emerald Green Status */
+#define COLOR_ACCENT_RED 0xF800    /* Vivid Coral Red Error */
+#define COLOR_ACCENT_YELLOW 0xFFE0 /* Warm Amber Clock / Highlights */
+#define COLOR_TEXT_WHITE 0xFFFF    /* Crisp White */
+#define COLOR_TEXT_MUTED 0x8410    /* Medium Muted Grey */
+#define COLOR_BTN_BG 0x1904        /* Slate Button Fill */
+#define COLOR_BTN_BORDER 0x07FF    /* Cyan Button Outline */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -84,6 +85,8 @@ typedef struct {
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+
+IWDG_HandleTypeDef hiwdg;
 
 RTC_HandleTypeDef hrtc;
 
@@ -105,62 +108,50 @@ DMA_HandleTypeDef hdma_usart1_tx;
 /* Definitions for Task_RFID */
 osThreadId_t Task_RFIDHandle;
 const osThreadAttr_t Task_RFID_attributes = {
-  .name = "Task_RFID",
-  .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityHigh,
+    .name = "Task_RFID",
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t)osPriorityHigh,
 };
 /* Definitions for Task_GUI */
 osThreadId_t Task_GUIHandle;
 const osThreadAttr_t Task_GUI_attributes = {
-  .name = "Task_GUI",
-  .stack_size = 1600 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+    .name = "Task_GUI",
+    .stack_size = 1600 * 4,
+    .priority = (osPriority_t)osPriorityAboveNormal,
 };
 /* Definitions for Task_ESP32 */
 osThreadId_t Task_ESP32Handle;
 const osThreadAttr_t Task_ESP32_attributes = {
-  .name = "Task_ESP32",
-  .stack_size = 768 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name = "Task_ESP32",
+    .stack_size = 768 * 4,
+    .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for Task_Storage */
 osThreadId_t Task_StorageHandle;
 const osThreadAttr_t Task_Storage_attributes = {
-  .name = "Task_Storage",
-  .stack_size = 1024 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
+    .name = "Task_Storage",
+    .stack_size = 1024 * 4,
+    .priority = (osPriority_t)osPriorityBelowNormal,
 };
 /* Definitions for uiEventQueue */
 osMessageQueueId_t uiEventQueueHandle;
-const osMessageQueueAttr_t uiEventQueue_attributes = {
-  .name = "uiEventQueue"
-};
+const osMessageQueueAttr_t uiEventQueue_attributes = {.name = "uiEventQueue"};
 /* Definitions for sdLogQueue */
 osMessageQueueId_t sdLogQueueHandle;
-const osMessageQueueAttr_t sdLogQueue_attributes = {
-  .name = "sdLogQueue"
-};
+const osMessageQueueAttr_t sdLogQueue_attributes = {.name = "sdLogQueue"};
 /* Definitions for espTxQueue */
 osMessageQueueId_t espTxQueueHandle;
-const osMessageQueueAttr_t espTxQueue_attributes = {
-  .name = "espTxQueue"
-};
+const osMessageQueueAttr_t espTxQueue_attributes = {.name = "espTxQueue"};
 /* Definitions for sdioFatFsMutex */
 osMutexId_t sdioFatFsMutexHandle;
-const osMutexAttr_t sdioFatFsMutex_attributes = {
-  .name = "sdioFatFsMutex"
-};
+const osMutexAttr_t sdioFatFsMutex_attributes = {.name = "sdioFatFsMutex"};
 /* Definitions for spi1TxDmaSem */
 osSemaphoreId_t spi1TxDmaSemHandle;
-const osSemaphoreAttr_t spi1TxDmaSem_attributes = {
-  .name = "spi1TxDmaSem"
-};
+const osSemaphoreAttr_t spi1TxDmaSem_attributes = {.name = "spi1TxDmaSem"};
 /* USER CODE BEGIN PV */
 /* Mutex for protecting SPI2 bus between Touch & other SPI tasks */
 osMutexId_t spi2MutexHandle;
-const osMutexAttr_t spi2Mutex_attributes = {
-  .name = "spi2Mutex"
-};
+const osMutexAttr_t spi2Mutex_attributes = {.name = "spi2Mutex"};
 
 /* Hardware & System Status Flags */
 volatile bool g_clrc663_ready = false;
@@ -170,8 +161,8 @@ volatile bool g_wifi_connected = false;
 volatile uint32_t g_attendance_total = 0;
 
 /* RFID duplicate filter */
-static uint8_t  g_prev_uid[10] = {0};
-static uint8_t  g_prev_uid_len = 0;
+static uint8_t g_prev_uid[10] = {0};
+static uint8_t g_prev_uid_len = 0;
 static uint32_t g_prev_uid_tick = 0;
 
 /* ESP32 USART1 Rx Buffer */
@@ -194,27 +185,55 @@ static void MX_SPI3_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_IWDG_Init(void);
 void StartRfidTask(void *argument);
 void StartGuiTask(void *argument);
 void StartEsp32Task(void *argument);
 void StartStorageTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map);
+static void my_disp_flush(lv_display_t *disp, const lv_area_t *area,
+                          uint8_t *px_map);
 static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* ========================================================================== */
+/*                COOPERATIVE MULTI-TASK WATCHDOG (IWDG) SUPERVISOR           */
+/* ========================================================================== */
+#define WDT_TASK_RFID    (1U << 0)
+#define WDT_TASK_GUI     (1U << 1)
+#define WDT_TASK_ESP32   (1U << 2)
+#define WDT_TASK_STORAGE (1U << 3)
+#define WDT_ALL_TASKS    (WDT_TASK_RFID | WDT_TASK_GUI | WDT_TASK_ESP32 | WDT_TASK_STORAGE)
 
+static volatile uint32_t g_wdt_task_checkin = 0;
+
+/**
+ * @brief  Pencatatan check-in berkala dari masing-masing task FreeRTOS.
+ *         Watchdog IWDG HANYA akan disegarkan jika SELURUH task aktif
+ *         (RFID, GUI, ESP32, Storage) beroperasi normal.
+ *         Jika salah satu task hang/deadlock, IWDG akan reset hardware dalam 2 detik.
+ */
+void Watchdog_CheckIn(uint32_t task_mask)
+{
+  taskENTER_CRITICAL();
+  g_wdt_task_checkin |= task_mask;
+  if ((g_wdt_task_checkin & WDT_ALL_TASKS) == WDT_ALL_TASKS)
+  {
+    HAL_IWDG_Refresh(&hiwdg);
+    g_wdt_task_checkin = 0;
+  }
+  taskEXIT_CRITICAL();
+}
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
 
   /* USER CODE BEGIN 1 */
 
@@ -222,7 +241,8 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+   */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -248,9 +268,19 @@ int main(void)
   MX_TIM3_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
+  HAL_IWDG_Refresh(&hiwdg);
   ILI9488_Init();
+  HAL_IWDG_Refresh(&hiwdg);
   XPT2046_Init();
+  HAL_IWDG_Refresh(&hiwdg);
+
+  /* Cek apakah perangkat baru saja pulih mandiri dari Watchdog Reset */
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST))
+  {
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+  }
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -278,13 +308,13 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of uiEventQueue */
-  uiEventQueueHandle = osMessageQueueNew (8, 32, &uiEventQueue_attributes);
+  uiEventQueueHandle = osMessageQueueNew(8, 32, &uiEventQueue_attributes);
 
   /* creation of sdLogQueue */
-  sdLogQueueHandle = osMessageQueueNew (16, 64, &sdLogQueue_attributes);
+  sdLogQueueHandle = osMessageQueueNew(16, 64, &sdLogQueue_attributes);
 
   /* creation of espTxQueue */
-  espTxQueueHandle = osMessageQueueNew (16, 64, &espTxQueue_attributes);
+  espTxQueueHandle = osMessageQueueNew(16, 64, &espTxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -301,7 +331,8 @@ int main(void)
   Task_ESP32Handle = osThreadNew(StartEsp32Task, NULL, &Task_ESP32_attributes);
 
   /* creation of Task_Storage */
-  Task_StorageHandle = osThreadNew(StartStorageTask, NULL, &Task_Storage_attributes);
+  Task_StorageHandle =
+      osThreadNew(StartStorageTask, NULL, &Task_Storage_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -311,6 +342,9 @@ int main(void)
   /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
 
+  /* Segarkan IWDG tepat sebelum RTOS scheduler dimulai */
+  HAL_IWDG_Refresh(&hiwdg);
+
   /* Start scheduler */
   osKernelStart();
 
@@ -318,8 +352,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+  while (1) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -328,58 +361,56 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
+   * in the RCC_OscInitTypeDef structure.
+   */
+  RCC_OscInitStruct.OscillatorType =
+      RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_HSE | RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 25;
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 7;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK) {
     Error_Handler();
   }
 }
 
 /**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC1_Init(void)
-{
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_ADC1_Init(void) {
 
   /* USER CODE BEGIN ADC1_Init 0 */
 
@@ -391,8 +422,9 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 1 */
 
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+  /** Configure the global features of the ADC (Clock, Resolution, Data
+   * Alignment and number of conversion)
+   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -405,33 +437,55 @@ static void MX_ADC1_Init(void)
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) {
     Error_Handler();
   }
 
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+  /** Configure for the selected ADC regular channel its corresponding rank in
+   * the sequencer and its sample time.
+   */
   sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
-  * @brief RTC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_RTC_Init(void)
-{
+ * @brief IWDG Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_IWDG_Init(void) {
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+  hiwdg.Init.Reload = 2000; /* 32 kHz / 32 = 1000 Hz => 2000 reload = 2.0 detik timeout */
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
+}
+
+/**
+ * @brief RTC Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_RTC_Init(void) {
 
   /* USER CODE BEGIN RTC_Init 0 */
 
@@ -445,7 +499,7 @@ static void MX_RTC_Init(void)
   /* USER CODE END RTC_Init 1 */
 
   /** Initialize RTC Only
-  */
+   */
   hrtc.Instance = RTC;
   hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
   hrtc.Init.AsynchPrediv = 127;
@@ -453,30 +507,27 @@ static void MX_RTC_Init(void)
   hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
   hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
   hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
+  if (HAL_RTC_Init(&hrtc) != HAL_OK) {
     Error_Handler();
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
   __HAL_RCC_PWR_CLK_ENABLE();
   HAL_PWR_EnableBkUpAccess();
-  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == 0x32F2)
-  {
+  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == 0x32F2) {
     /* RTC sudah pernah disinkronkan dan terus berjalan via baterai backup */
     return;
   }
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
-  */
+   */
   sTime.Hours = 0x0;
   sTime.Minutes = 0x0;
   sTime.Seconds = 0x0;
   sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
   sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-  {
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK) {
     Error_Handler();
   }
   sDate.WeekDay = RTC_WEEKDAY_MONDAY;
@@ -484,23 +535,20 @@ static void MX_RTC_Init(void)
   sDate.Date = 0x1;
   sDate.Year = 0x0;
 
-  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
-  {
+  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
-
 }
 
 /**
-  * @brief SDIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SDIO_SD_Init(void)
-{
+ * @brief SDIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SDIO_SD_Init(void) {
 
   /* USER CODE BEGIN SDIO_Init 0 */
 
@@ -519,16 +567,14 @@ static void MX_SDIO_SD_Init(void)
   /* USER CODE BEGIN SDIO_Init 2 */
 
   /* USER CODE END SDIO_Init 2 */
-
 }
 
 /**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
+ * @brief SPI1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI1_Init(void) {
 
   /* USER CODE BEGIN SPI1_Init 0 */
 
@@ -550,23 +596,20 @@ static void MX_SPI1_Init(void)
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
-
 }
 
 /**
-  * @brief SPI2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI2_Init(void)
-{
+ * @brief SPI2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI2_Init(void) {
 
   /* USER CODE BEGIN SPI2_Init 0 */
 
@@ -588,23 +631,20 @@ static void MX_SPI2_Init(void)
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi2.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI2_Init 2 */
 
   /* USER CODE END SPI2_Init 2 */
-
 }
 
 /**
-  * @brief SPI3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI3_Init(void)
-{
+ * @brief SPI3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI3_Init(void) {
 
   /* USER CODE BEGIN SPI3_Init 0 */
 
@@ -626,23 +666,20 @@ static void MX_SPI3_Init(void)
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi3.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi3) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi3) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI3_Init 2 */
 
   /* USER CODE END SPI3_Init 2 */
-
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM3_Init(void) {
 
   /* USER CODE BEGIN TIM3_Init 0 */
 
@@ -660,38 +697,33 @@ static void MX_TIM3_Init(void)
   htim3.Init.Period = 65535;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK) {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) {
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART1_UART_Init(void) {
 
   /* USER CODE BEGIN USART1_Init 0 */
 
@@ -708,21 +740,18 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
+  if (HAL_UART_Init(&huart1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
+ * Enable DMA controller clock
+ */
+static void MX_DMA_Init(void) {
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
@@ -743,16 +772,14 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream7_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 7, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -766,42 +793,44 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, OUTPUT_BUZZER_Pin|SPI1_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, OUTPUT_BUZZER_Pin | SPI1_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, SPI1_RST_Pin|SPI1_DC_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, SPI1_RST_Pin | SPI1_DC_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, USER_LED_Pin|SPI2_CS_Pin|SPI3_CS_Pin|SPI3_RST_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB,
+                    USER_LED_Pin | SPI2_CS_Pin | SPI3_CS_Pin | SPI3_RST_Pin,
+                    GPIO_PIN_RESET);
 
   /*Configure GPIO pins : OUTPUT_BUZZER_Pin SPI1_CS_Pin */
-  GPIO_InitStruct.Pin = OUTPUT_BUZZER_Pin|SPI1_CS_Pin;
+  GPIO_InitStruct.Pin = OUTPUT_BUZZER_Pin | SPI1_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI1_RST_Pin SPI1_DC_Pin */
-  GPIO_InitStruct.Pin = SPI1_RST_Pin|SPI1_DC_Pin;
+  GPIO_InitStruct.Pin = SPI1_RST_Pin | SPI1_DC_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : USER_LED_Pin SPI2_CS_Pin SPI3_CS_Pin SPI3_RST_Pin */
-  GPIO_InitStruct.Pin = USER_LED_Pin|SPI2_CS_Pin|SPI3_CS_Pin|SPI3_RST_Pin;
+  GPIO_InitStruct.Pin = USER_LED_Pin | SPI2_CS_Pin | SPI3_CS_Pin | SPI3_RST_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SPI2_IRQ_Pin (Active-Low Touch PENIRQ dengan internal Pull-Up) */
+  /*Configure GPIO pin : SPI2_IRQ_Pin */
   GPIO_InitStruct.Pin = SPI2_IRQ_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(SPI2_IRQ_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SDIO_DET_Pin (MicroSD Card Detect dengan internal Pull-Up) */
+  /*Configure GPIO pin : SDIO_DET_Pin */
   GPIO_InitStruct.Pin = SDIO_DET_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
@@ -827,51 +856,41 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
-  * @brief  EXTI Callback for RFID and Touch interrupts
-  */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
+ * @brief  EXTI Callback for RFID and Touch interrupts
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
   /* RFID IRQ: PA15 (SPI3_IRQ) */
-  if (GPIO_Pin == SPI3_IRQ_Pin)
-  {
-    if (Task_RFIDHandle != NULL)
-    {
-      vTaskNotifyGiveFromISR((TaskHandle_t)Task_RFIDHandle, &xHigherPriorityTaskWoken);
+  if (GPIO_Pin == SPI3_IRQ_Pin) {
+    if (Task_RFIDHandle != NULL) {
+      vTaskNotifyGiveFromISR((TaskHandle_t)Task_RFIDHandle,
+                             &xHigherPriorityTaskWoken);
       portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
   }
   /* Touch IRQ: PC6 (SPI2_IRQ) atau PB1 */
-  else if (GPIO_Pin == SPI2_IRQ_Pin || GPIO_Pin == GPIO_PIN_1)
-  {
-    if (Task_GUIHandle != NULL)
-    {
-      vTaskNotifyGiveFromISR((TaskHandle_t)Task_GUIHandle, &xHigherPriorityTaskWoken);
+  else if (GPIO_Pin == SPI2_IRQ_Pin || GPIO_Pin == GPIO_PIN_1) {
+    if (Task_GUIHandle != NULL) {
+      vTaskNotifyGiveFromISR((TaskHandle_t)Task_GUIHandle,
+                             &xHigherPriorityTaskWoken);
       portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
   }
 }
 
 /**
-  * @brief  UART Rx Complete Callback for USART1 ESP32 communication
-  */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART1)
-  {
-    if (uart1_rx_data == '\n' || uart1_rx_data == '\r')
-    {
+ * @brief  UART Rx Complete Callback for USART1 ESP32 communication
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART1) {
+    if (uart1_rx_data == '\n' || uart1_rx_data == '\r') {
       uart1_rx_buf[uart1_rx_idx] = '\0';
-      if (uart1_rx_idx > 0)
-      {
+      if (uart1_rx_idx > 0) {
         uart1_rx_ready = 1;
       }
       uart1_rx_idx = 0;
-    }
-    else
-    {
-      if (uart1_rx_idx < sizeof(uart1_rx_buf) - 1)
-      {
+    } else {
+      if (uart1_rx_idx < sizeof(uart1_rx_buf) - 1) {
         uart1_rx_buf[uart1_rx_idx++] = uart1_rx_data;
       }
     }
@@ -884,35 +903,35 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /* ========================================================================== */
 
 /**
-  * @brief  LVGL Display flush callback sending pixels to ILI9488
-  */
-static void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
-{
+ * @brief  LVGL Display flush callback sending pixels to ILI9488
+ */
+static void my_disp_flush(lv_display_t *disp, const lv_area_t *area,
+                          uint8_t *px_map) {
   ILI9488_DrawBitmapLVGL(area->x1, area->y1, area->x2, area->y2, px_map);
   lv_display_flush_ready(disp);
 }
 
 /**
-  * @brief  Membaca riwayat absensi terakhir dari MicroSD (ATTEND.CSV)
-  */
-uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs)
-{
+ * @brief  Membaca riwayat absensi terakhir dari MicroSD (ATTEND.CSV)
+ */
+uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs) {
   uint16_t count = 0;
-  if (!g_sd_mounted) return 0;
-  if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK) return 0;
+  if (!g_sd_mounted)
+    return 0;
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK)
+    return 0;
 
-  if (f_open(&SDFile, "ATTEND.CSV", FA_READ) == FR_OK)
-  {
+  if (f_open(&SDFile, "ATTEND.CSV", FA_READ) == FR_OK) {
     FSIZE_t size = f_size(&SDFile);
     /* Baca dari dekat akhir file jika ukuran file lebih dari 2KB */
     FSIZE_t start_pos = (size > 2048) ? (size - 2048) : 0;
     f_lseek(&SDFile, start_pos);
 
     char line_buf[128];
-    while (f_gets(line_buf, sizeof(line_buf), &SDFile) != NULL)
-    {
+    while (f_gets(line_buf, sizeof(line_buf), &SDFile) != NULL) {
       size_t len = strlen(line_buf);
-      while (len > 0 && (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n')) {
+      while (len > 0 &&
+             (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n')) {
         line_buf[--len] = '\0';
       }
       if (len > 5) {
@@ -937,15 +956,16 @@ uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs)
 }
 
 /**
-  * @brief  Pengujian diagnostik MicroSD (Mount, Buat file, Tulis, Baca, Hapus)
-  */
-bool Storage_TestDiagnostic(char *out_msg, size_t max_len)
-{
+ * @brief  Pengujian diagnostik MicroSD (Mount, Buat file, Tulis, Baca, Hapus)
+ */
+bool Storage_TestDiagnostic(char *out_msg, size_t max_len) {
   if (!g_sd_mounted) {
-    if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
       g_sd_mounted = true;
     } else {
-      snprintf(out_msg, max_len, "GAGAL: MicroSD tidak terdeteksi (f_mount gagal). Cek kartu & slot SDIO.");
+      snprintf(out_msg, max_len,
+               "GAGAL: MicroSD tidak terdeteksi (f_mount gagal). Cek kartu & "
+               "slot SDIO.");
       return false;
     }
   }
@@ -959,7 +979,10 @@ bool Storage_TestDiagnostic(char *out_msg, size_t max_len)
   FRESULT fres = f_open(&testFile, "TEST_RW.TMP", FA_CREATE_ALWAYS | FA_WRITE);
   if (fres != FR_OK) {
     osMutexRelease(sdioFatFsMutexHandle);
-    snprintf(out_msg, max_len, "GAGAL: Tidak dapat membuat file tulis (FR=%d). Pastikan format FAT32.", (int)fres);
+    snprintf(
+        out_msg, max_len,
+        "GAGAL: Tidak dapat membuat file tulis (FR=%d). Pastikan format FAT32.",
+        (int)fres);
     return false;
   }
 
@@ -980,19 +1003,20 @@ bool Storage_TestDiagnostic(char *out_msg, size_t max_len)
   osMutexRelease(sdioFatFsMutexHandle);
 
   if (strcmp(read_buf, test_data) == 0) {
-    snprintf(out_msg, max_len, "OK: MicroSD FAT32 normal, uji tulis & baca data berhasil.");
+    snprintf(out_msg, max_len,
+             "OK: MicroSD FAT32 normal, uji tulis & baca data berhasil.");
     return true;
   } else {
-    snprintf(out_msg, max_len, "GAGAL: Data uji baca tidak cocok dengan data tulis.");
+    snprintf(out_msg, max_len,
+             "GAGAL: Data uji baca tidak cocok dengan data tulis.");
     return false;
   }
 }
 
 /**
-  * @brief  Pengujian diagnostik hardware RFID Reader CLRC663 via SPI3
-  */
-bool RFID_TestDiagnostic(char *out_msg, size_t max_len)
-{
+ * @brief  Pengujian diagnostik hardware RFID Reader CLRC663 via SPI3
+ */
+bool RFID_TestDiagnostic(char *out_msg, size_t max_len) {
   uint8_t ver = 0;
   if (osMutexAcquire(spi2MutexHandle, 500) == osOK) {
     ver = CLRC663_ReadVersion();
@@ -1008,53 +1032,59 @@ bool RFID_TestDiagnostic(char *out_msg, size_t max_len)
   }
 
   if (ver != 0x00 && ver != 0xFF) {
-    snprintf(out_msg, max_len, "OK: Chip CLRC663 terdeteksi (Versi 0x%02X). Antena RF aktif.", ver);
+    snprintf(out_msg, max_len,
+             "OK: Chip CLRC663 terdeteksi (Versi 0x%02X). Antena RF aktif.",
+             ver);
     return true;
   } else {
-    snprintf(out_msg, max_len, "GAGAL: Chip CLRC663 tidak merespons SPI3 (Ver=0x%02X). Cek pin SCK/MISO/MOSI/CS & 3.3V.", ver);
+    snprintf(out_msg, max_len,
+             "GAGAL: Chip CLRC663 tidak merespons SPI3 (Ver=0x%02X). Cek pin "
+             "SCK/MISO/MOSI/CS & 3.3V.",
+             ver);
     return false;
   }
 }
 
 /**
-  * @brief  Pengujian diagnostik status koneksi Wi-Fi ESP32-C6
-  */
-bool WiFi_GetDiagnostic(char *out_msg, size_t max_len)
-{
+ * @brief  Pengujian diagnostik status koneksi Wi-Fi ESP32-C6
+ */
+bool WiFi_GetDiagnostic(char *out_msg, size_t max_len) {
   /* Kirim ping query status ke ESP32 */
   esp_tx_item_t item = {0};
   snprintf(item.payload, sizeof(item.payload), "CMD:GET_WIFI_STATUS\n");
   osMessageQueuePut(espTxQueueHandle, &item, 0, 50);
 
   if (g_wifi_connected) {
-    snprintf(out_msg, max_len, "OK: Wi-Fi terhubung via ESP32-C6. Koneksi AP aktif.");
+    snprintf(out_msg, max_len,
+             "OK: Wi-Fi terhubung via ESP32-C6. Koneksi AP aktif.");
     return true;
   } else {
-    snprintf(out_msg, max_len, "PERINGATAN: Wi-Fi belum terhubung. Cek konfigurasi SSID & Password di tab WI-FI.");
+    snprintf(out_msg, max_len,
+             "PERINGATAN: Wi-Fi belum terhubung. Cek konfigurasi SSID & "
+             "Password di tab WI-FI.");
     return false;
   }
 }
 
 /**
-  * @brief  Pengujian diagnostik RTC internal
-  */
-bool RTC_GetDiagnostic(char *out_msg, size_t max_len)
-{
+ * @brief  Pengujian diagnostik RTC internal
+ */
+bool RTC_GetDiagnostic(char *out_msg, size_t max_len) {
   RTC_TimeTypeDef sTime = {0};
   RTC_DateTypeDef sDate = {0};
   HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
   HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-  snprintf(out_msg, max_len, "OK: RTC berdetak normal: %02d:%02d:%02d WIB (20%02d-%02d-%02d).",
-           sTime.Hours, sTime.Minutes, sTime.Seconds,
-           sDate.Year, sDate.Month, sDate.Date);
+  snprintf(out_msg, max_len,
+           "OK: RTC berdetak normal: %02d:%02d:%02d WIB (20%02d-%02d-%02d).",
+           sTime.Hours, sTime.Minutes, sTime.Seconds, sDate.Year, sDate.Month,
+           sDate.Date);
   return true;
 }
 
 /**
-  * @brief  Pengujian diagnostik Buzzer
-  */
-void Buzzer_TestDiagnostic(void)
-{
+ * @brief  Pengujian diagnostik Buzzer
+ */
+void Buzzer_TestDiagnostic(void) {
   HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
   osDelay(60);
   HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
@@ -1065,17 +1095,13 @@ void Buzzer_TestDiagnostic(void)
 }
 
 /**
-  * @brief  LVGL Touch input callback reading from XPT2046 with mutex protection
-  */
-static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
-{
+ * @brief  LVGL Touch input callback reading from XPT2046 with mutex protection
+ */
+static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   uint16_t touch_x = 0, touch_y = 0;
-  if (osMutexAcquire(spi2MutexHandle, 5) == osOK)
-  {
-    if (XPT2046_GetTouch(&touch_x, &touch_y))
-    {
-      if (GUI_Attendance_IsSleeping())
-      {
+  if (osMutexAcquire(spi2MutexHandle, 5) == osOK) {
+    if (XPT2046_GetTouch(&touch_x, &touch_y)) {
+      if (GUI_Attendance_IsSleeping()) {
         /* Bangunkan layar dari mode sleep dan abaikan sentuhan pertama */
         GUI_Attendance_Wakeup();
         data->state = LV_INDEV_STATE_RELEASED;
@@ -1088,16 +1114,12 @@ static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
       data->point.x = touch_x;
       data->point.y = touch_y;
       GUI_Attendance_CheckCornerTouch(touch_x, touch_y);
-    }
-    else
-    {
+    } else {
       data->state = LV_INDEV_STATE_RELEASED;
       GUI_Attendance_CheckCornerTouch(0, 0);
     }
     osMutexRelease(spi2MutexHandle);
-  }
-  else
-  {
+  } else {
     data->state = LV_INDEV_STATE_RELEASED;
     GUI_Attendance_CheckCornerTouch(0, 0);
   }
@@ -1106,68 +1128,58 @@ static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
 
 /* USER CODE BEGIN Header_StartRfidTask */
 /**
-  * @brief  Function implementing the Task_RFID thread.
-  * @param  argument: Not used
-  * @retval None
-  */
+ * @brief  Function implementing the Task_RFID thread.
+ * @param  argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartRfidTask */
-void StartRfidTask(void *argument)
-{
+void StartRfidTask(void *argument) {
   /* USER CODE BEGIN 5 */
   /* 1. Inisialisasi Hardware RFID Reader NXP CLRC66303 */
   osMutexAcquire(spi2MutexHandle, osWaitForever);
-  if (CLRC663_Init(&hspi3) == CLRC663_OK)
-  {
+  if (CLRC663_Init(&hspi3) == CLRC663_OK) {
     g_clrc663_ready = true;
     g_clrc663_version = CLRC663_ReadVersion();
     CLRC663_AntennaOn();
     CLRC663_SetupISO14443A();
-  }
-  else
-  {
+  } else {
     g_clrc663_ready = false;
     g_clrc663_version = CLRC663_ReadVersion();
   }
   osMutexRelease(spi2MutexHandle);
 
   /* Infinite loop */
-  for(;;)
-  {
+  for (;;) {
+    Watchdog_CheckIn(WDT_TASK_RFID);
     /* Tidur menunggu Task Notification dari RFID_IRQ (PA15/EXTI15_10 atau PA8).
-       Diberi timeout 50 ms sebagai fallback polling agar pembacaan kartu tetap responsif. */
+       Diberi timeout 50 ms sebagai fallback polling agar pembacaan kartu tetap
+       responsif. */
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
 
     /* Kunci spi2Mutex sebelum mengakses reader kartu */
-    if (osMutexAcquire(spi2MutexHandle, 20) == osOK)
-    {
-      if (!g_clrc663_ready)
-      {
-        if (CLRC663_Init(&hspi3) == CLRC663_OK)
-        {
+    if (osMutexAcquire(spi2MutexHandle, 20) == osOK) {
+      if (!g_clrc663_ready) {
+        if (CLRC663_Init(&hspi3) == CLRC663_OK) {
           g_clrc663_ready = true;
           CLRC663_AntennaOn();
           CLRC663_SetupISO14443A();
         }
       }
 
-      if (g_clrc663_ready)
-      {
+      if (g_clrc663_ready) {
         CLRC663_Card_t card;
-        if (CLRC663_ReadCard(&card))
-        {
+        if (CLRC663_ReadCard(&card)) {
           /* Debounce kartu yang sama dalam durasi 1500 ms */
           uint32_t now = HAL_GetTick();
           bool is_duplicate = false;
-          if (card.uid_len == g_prev_uid_len && (now - g_prev_uid_tick < 1500))
-          {
-            if (memcmp(card.uid, g_prev_uid, card.uid_len) == 0)
-            {
+          if (card.uid_len == g_prev_uid_len &&
+              (now - g_prev_uid_tick < 1500)) {
+            if (memcmp(card.uid, g_prev_uid, card.uid_len) == 0) {
               is_duplicate = true;
             }
           }
 
-          if (!is_duplicate)
-          {
+          if (!is_duplicate) {
             /* Bangunkan layar seketika saat kartu terdeteksi */
             GUI_Attendance_Wakeup();
 
@@ -1183,13 +1195,16 @@ void StartRfidTask(void *argument)
             HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
             /* Bunyikan BUZZER dan nyalakan USER LED singkat (75 ms) */
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                              GPIO_PIN_SET);
             HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
             osDelay(75);
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                              GPIO_PIN_RESET);
             HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
 
-            /* Kirim event deteksi kartu ke uiEventQueue untuk ditampilkan Task_GUI */
+            /* Kirim event deteksi kartu ke uiEventQueue untuk ditampilkan
+             * Task_GUI */
             ui_event_t ui_evt = {0};
             ui_evt.type = UI_EVENT_RFID_CARD_DETECTED;
             ui_evt.status = 1;
@@ -1199,7 +1214,8 @@ void StartRfidTask(void *argument)
                      sTime.Hours, sTime.Minutes, sTime.Seconds);
             osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
 
-            /* Kirim data absensi ke sdLogQueue untuk ditulis ke MicroSD oleh Task_Storage */
+            /* Kirim data absensi ke sdLogQueue untuk ditulis ke MicroSD oleh
+             * Task_Storage */
             sd_log_item_t sd_item = {0};
             sd_item.year = sDate.Year;
             sd_item.month = sDate.Month;
@@ -1215,10 +1231,12 @@ void StartRfidTask(void *argument)
             /* Kirim permintaan verifikasi ke ESP32 via espTxQueue */
             esp_tx_item_t esp_item = {0};
             if (card.uid_len >= 4) {
-              snprintf(esp_item.payload, sizeof(esp_item.payload), "RFID:%02X%02X%02X%02X\n",
-                       card.uid[0], card.uid[1], card.uid[2], card.uid[3]);
+              snprintf(esp_item.payload, sizeof(esp_item.payload),
+                       "RFID:%02X%02X%02X%02X\n", card.uid[0], card.uid[1],
+                       card.uid[2], card.uid[3]);
             } else {
-              snprintf(esp_item.payload, sizeof(esp_item.payload), "RFID:UNKNOWN\n");
+              snprintf(esp_item.payload, sizeof(esp_item.payload),
+                       "RFID:UNKNOWN\n");
             }
             osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 10);
           }
@@ -1232,18 +1250,18 @@ void StartRfidTask(void *argument)
 
 /* USER CODE BEGIN Header_StartGuiTask */
 /**
-* @brief Function implementing the Task_GUI thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the Task_GUI thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartGuiTask */
-void StartGuiTask(void *argument)
-{
+void StartGuiTask(void *argument) {
   /* USER CODE BEGIN StartGuiTask */
   /* Muat konfigurasi tersimpan dari Flash STM32 (Sector 11) */
   App_Settings_Init();
 
-  /* 1. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 sesuai pengaturan tersimpan */
+  /* 1. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 sesuai pengaturan
+   * tersimpan */
   HAL_TIM_Base_Start(&htim3);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   uint32_t compare = ((uint32_t)g_app_settings.brightness * 65535) / 100;
@@ -1258,10 +1276,11 @@ void StartGuiTask(void *argument)
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB888);
   lv_display_set_flush_cb(disp, my_disp_flush);
 
-  /* Buffer render parsial LVGL (16 baris @ 480 px = 23040 byte) */
-  #define DRAW_BUF_SIZE (ILI9488_WIDTH * 16 * 3)
+/* Buffer render parsial LVGL (16 baris @ 480 px = 23040 byte) */
+#define DRAW_BUF_SIZE (ILI9488_WIDTH * 16 * 3)
   static uint8_t lv_draw_buf[DRAW_BUF_SIZE] __attribute__((aligned(64)));
-  lv_display_set_buffers(disp, lv_draw_buf, NULL, sizeof(lv_draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, lv_draw_buf, NULL, sizeof(lv_draw_buf),
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   /* 4. Setup Input Device Touchscreen (XPT2046) */
   lv_indev_t *indev = lv_indev_create();
@@ -1274,12 +1293,12 @@ void StartGuiTask(void *argument)
   uint32_t last_clock_tick = 0;
 
   /* Infinite loop GUI Task */
-  for(;;)
-  {
-    /* 1. Periksa event masuk dari uiEventQueue (misal dari Task_RFID, Task_ESP32) */
+  for (;;) {
+    Watchdog_CheckIn(WDT_TASK_GUI);
+    /* 1. Periksa event masuk dari uiEventQueue (misal dari Task_RFID,
+     * Task_ESP32) */
     ui_event_t evt;
-    while (osMessageQueueGet(uiEventQueueHandle, &evt, NULL, 0) == osOK)
-    {
+    while (osMessageQueueGet(uiEventQueueHandle, &evt, NULL, 0) == osOK) {
       GUI_Attendance_ProcessEvent(&evt);
     }
 
@@ -1287,100 +1306,96 @@ void StartGuiTask(void *argument)
     GUI_Attendance_CheckSleep();
 
     /* 3. Manajemen daya & refresh GUI */
-    if (GUI_Attendance_IsSleeping())
-    {
+    if (GUI_Attendance_IsSleeping()) {
       /* Saat layar dalam mode sleep:
-       * - Tunggu interupsi sentuh dari XPT2046 (/PENIRQ jatuh ke LOW via EXTI) atau timeout 50ms
+       * - Tunggu interupsi sentuh dari XPT2046 (/PENIRQ jatuh ke LOW via EXTI)
+       * atau timeout 50ms
        * - Bangunkan layar segera bila disentuh */
-      if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50)) > 0 || XPT2046_IsTouched())
-      {
+      if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50)) > 0 ||
+          XPT2046_IsTouched()) {
         GUI_Attendance_Wakeup();
         lv_timer_handler();
-      }
-      else
-      {
+      } else {
         /* Deteksi jika MicroSD tiba-tiba dicabut saat layar dalam mode sleep */
-        if (g_sd_mounted && (HAL_GPIO_ReadPin(SDIO_DET_GPIO_Port, SDIO_DET_Pin) != GPIO_PIN_RESET))
-        {
+        if (g_sd_mounted &&
+            (HAL_GPIO_ReadPin(SDIO_DET_GPIO_Port, SDIO_DET_Pin) !=
+             GPIO_PIN_RESET)) {
           g_sd_mounted = false;
-          if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK)
-          {
-            f_mount(NULL, (TCHAR const*)SDPath, 0);
+          if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK) {
+            f_mount(NULL, (TCHAR const *)SDPath, 0);
             osMutexRelease(sdioFatFsMutexHandle);
           }
           GUI_Attendance_Wakeup();
           GUI_Attendance_ShowSDWarning(true);
-          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                            GPIO_PIN_SET);
           osDelay(80);
-          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                            GPIO_PIN_RESET);
         }
       }
-    }
-    else
-    {
-      /* Saat layar aktif: perbarui jam digital, status MicroSD & badge peripheral setiap 500 ms */
+    } else {
+      /* Saat layar aktif: perbarui jam digital, status MicroSD & badge
+       * peripheral setiap 500 ms */
       uint32_t now = HAL_GetTick();
-      if (now - last_clock_tick >= 500)
-      {
+      if (now - last_clock_tick >= 500) {
         last_clock_tick = now;
 
         /* Deteksi status fisik kartu MicroSD secara real-time */
-        bool sd_phys_present = (HAL_GPIO_ReadPin(SDIO_DET_GPIO_Port, SDIO_DET_Pin) == GPIO_PIN_RESET);
+        bool sd_phys_present =
+            (HAL_GPIO_ReadPin(SDIO_DET_GPIO_Port, SDIO_DET_Pin) ==
+             GPIO_PIN_RESET);
 
-        if (g_sd_mounted)
-        {
+        if (g_sd_mounted) {
           /* Kartu sebelumnya tercatat terpasang: verifikasi apakah dicabut */
           bool card_removed = !sd_phys_present;
-          if (!card_removed)
-          {
-            if (osMutexAcquire(sdioFatFsMutexHandle, 20) == osOK)
-            {
+          if (!card_removed) {
+            if (osMutexAcquire(sdioFatFsMutexHandle, 20) == osOK) {
               HAL_SD_CardStateTypeDef cstate = HAL_SD_GetCardState(&hsd);
               osMutexRelease(sdioFatFsMutexHandle);
-              if (cstate == HAL_SD_CARD_ERROR)
-              {
+              if (cstate == HAL_SD_CARD_ERROR) {
                 card_removed = true;
               }
             }
           }
 
-          if (card_removed)
-          {
+          if (card_removed) {
             /* MicroSD DICABUT saat sedang beroperasi! */
             g_sd_mounted = false;
-            if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK)
-            {
-              f_mount(NULL, (TCHAR const*)SDPath, 0);
+            if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK) {
+              f_mount(NULL, (TCHAR const *)SDPath, 0);
               osMutexRelease(sdioFatFsMutexHandle);
             }
             GUI_Attendance_ShowSDWarning(true);
 
             /* Alarm buzzer 2x beep tanda peringatan MicroSD dicabut */
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                              GPIO_PIN_SET);
             osDelay(60);
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                              GPIO_PIN_RESET);
             osDelay(40);
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                              GPIO_PIN_SET);
             osDelay(60);
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                              GPIO_PIN_RESET);
           }
-        }
-        else
-        {
-          /* Kartu sebelumnya belum terpasang: cek apakah baru dimasukkan kembali */
-          if (sd_phys_present)
-          {
-            if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK)
-            {
-              if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK)
-              {
+        } else {
+          /* Kartu sebelumnya belum terpasang: cek apakah baru dimasukkan
+           * kembali */
+          if (sd_phys_present) {
+            if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK) {
+              if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
                 g_sd_mounted = true;
                 GUI_Attendance_ShowSDWarning(false);
 
                 /* Nada konfirmasi 1x beep tanda MicroSD terpasang kembali */
-                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_SET);
                 osDelay(60);
-                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_RESET);
               }
               osMutexRelease(sdioFatFsMutexHandle);
             }
@@ -1392,7 +1407,8 @@ void StartGuiTask(void *argument)
         HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
         HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
         GUI_Attendance_UpdateClock(&sTime, &sDate);
-        GUI_Attendance_UpdateBadges(g_clrc663_ready, g_wifi_connected, g_sd_mounted);
+        GUI_Attendance_UpdateBadges(g_clrc663_ready, g_wifi_connected,
+                                    g_sd_mounted);
       }
 
       /* Jalankan LVGL timer handler */
@@ -1407,13 +1423,12 @@ void StartGuiTask(void *argument)
 
 /* USER CODE BEGIN Header_StartEsp32Task */
 /**
-* @brief Function implementing the Task_ESP32 thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the Task_ESP32 thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartEsp32Task */
-void StartEsp32Task(void *argument)
-{
+void StartEsp32Task(void *argument) {
   /* USER CODE BEGIN StartEsp32Task */
   /* Aktifkan penerimaan UART1 interrupt dari ESP32-C6 */
   HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
@@ -1421,25 +1436,25 @@ void StartEsp32Task(void *argument)
   /* Beri jeda sejenak lalu minta status koneksi Wi-Fi awal ke ESP32 */
   osDelay(300);
   const char *cmd_wifi_status = "CMD:GET_WIFI_STATUS\n";
-  HAL_UART_Transmit(&huart1, (uint8_t*)cmd_wifi_status, strlen(cmd_wifi_status), 100);
+  HAL_UART_Transmit(&huart1, (uint8_t *)cmd_wifi_status,
+                    strlen(cmd_wifi_status), 100);
 
-  for(;;)
-  {
+  for (;;) {
+    Watchdog_CheckIn(WDT_TASK_ESP32);
     /* 1. Ambil data dari espTxQueue jika ada */
     esp_tx_item_t tx_item;
-    if (osMessageQueueGet(espTxQueueHandle, &tx_item, NULL, 30) == osOK)
-    {
+    if (osMessageQueueGet(espTxQueueHandle, &tx_item, NULL, 30) == osOK) {
       /* Kirim ke ESP32-C6 via USART1 */
-      HAL_UART_Transmit(&huart1, (uint8_t*)tx_item.payload, strlen(tx_item.payload), 100);
+      HAL_UART_Transmit(&huart1, (uint8_t *)tx_item.payload,
+                        strlen(tx_item.payload), 100);
     }
 
-    /* 2. Proses pesan balasan serial dari ESP32-C6 (ACK / NTP / Verifikasi Nama) */
-    if (uart1_rx_ready)
-    {
+    /* 2. Proses pesan balasan serial dari ESP32-C6 (ACK / NTP / Verifikasi
+     * Nama) */
+    if (uart1_rx_ready) {
       uart1_rx_ready = 0;
 
-      if (strncmp(uart1_rx_buf, "GRANTED:", 8) == 0)
-      {
+      if (strncmp(uart1_rx_buf, "GRANTED:", 8) == 0) {
         /* Format: GRANTED:<UID>|<NAMA>|<DEPARTEMEN> */
         char *data = uart1_rx_buf + 8;
         char *uid_str = strtok(data, "|");
@@ -1455,37 +1470,35 @@ void StartEsp32Task(void *argument)
           strncpy(ui_evt.extra, "Akses Diterima", sizeof(ui_evt.extra) - 1);
         }
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-      }
-      else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0)
-      {
+      } else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0) {
         /* Format: DENIED:<ALASAN> */
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_ATTENDANCE_REJECTED;
         ui_evt.status = 0;
         strncpy(ui_evt.extra, uart1_rx_buf + 7, sizeof(ui_evt.extra) - 1);
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-      }
-      else if (strncmp(uart1_rx_buf, "TIME:", 5) == 0)
-      {
+      } else if (strncmp(uart1_rx_buf, "TIME:", 5) == 0) {
         /* Sinkronisasi Waktu NTP dari ESP32 */
         int h = 0, m = 0, s = 0, d = 0, mo = 0, y = 0;
         bool parsed = false;
 
         /* Format 1: YYYY-MM-DD HH:MM:SS */
-        if (sscanf(uart1_rx_buf + 5, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &m, &s) == 6) {
+        if (sscanf(uart1_rx_buf + 5, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &m,
+                   &s) == 6) {
           parsed = true;
         }
         /* Format 2: ISO8601 YYYY-MM-DDTHH:MM:SS */
-        else if (sscanf(uart1_rx_buf + 5, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &m, &s) == 6) {
+        else if (sscanf(uart1_rx_buf + 5, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h,
+                        &m, &s) == 6) {
           parsed = true;
         }
         /* Format 3: HH:MM:SS-DD/MM/YYYY */
-        else if (sscanf(uart1_rx_buf + 5, "%d:%d:%d-%d/%d/%d", &h, &m, &s, &d, &mo, &y) == 6) {
+        else if (sscanf(uart1_rx_buf + 5, "%d:%d:%d-%d/%d/%d", &h, &m, &s, &d,
+                        &mo, &y) == 6) {
           parsed = true;
         }
 
-        if (parsed)
-        {
+        if (parsed) {
           RTC_TimeTypeDef sTime = {0};
           RTC_DateTypeDef sDate = {0};
           sTime.Hours = (uint8_t)h;
@@ -1506,44 +1519,39 @@ void StartEsp32Task(void *argument)
           ui_event_t ui_evt = {0};
           ui_evt.type = UI_EVENT_NTP_SYNCED;
           ui_evt.status = 1;
-          snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d", h, m, s);
+          snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d", h, m,
+                   s);
           osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
         }
-      }
-      else if (strncmp(uart1_rx_buf, "TIME_ERR:", 9) == 0)
-      {
+      } else if (strncmp(uart1_rx_buf, "TIME_ERR:", 9) == 0) {
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_NTP_FAILED;
         ui_evt.status = 0;
         char *err_str = uart1_rx_buf + 9;
         size_t l = strlen(err_str);
-        while (l > 0 && (err_str[l-1] == '\r' || err_str[l-1] == '\n')) err_str[--l] = '\0';
+        while (l > 0 && (err_str[l - 1] == '\r' || err_str[l - 1] == '\n'))
+          err_str[--l] = '\0';
         strncpy(ui_evt.extra, err_str, sizeof(ui_evt.extra) - 1);
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-      }
-      else if (strncmp(uart1_rx_buf, "WIFI:OK", 7) == 0)
-      {
+      } else if (strncmp(uart1_rx_buf, "WIFI:OK", 7) == 0) {
         g_wifi_connected = true;
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 1;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
 
-        /* Otomatis minta sinkronisasi jam NTP saat pertama kali tersambung Wi-Fi */
+        /* Otomatis minta sinkronisasi jam NTP saat pertama kali tersambung
+         * Wi-Fi */
         esp_tx_item_t sync_cmd = {0};
         snprintf(sync_cmd.payload, sizeof(sync_cmd.payload), "CMD:SYNC_TIME\n");
         osMessageQueuePut(espTxQueueHandle, &sync_cmd, 0, 10);
-      }
-      else if (strncmp(uart1_rx_buf, "WIFI:FAIL", 9) == 0)
-      {
+      } else if (strncmp(uart1_rx_buf, "WIFI:FAIL", 9) == 0) {
         g_wifi_connected = false;
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 0;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-      }
-      else if (strncmp(uart1_rx_buf, "WIFI_SAVED", 10) == 0)
-      {
+      } else if (strncmp(uart1_rx_buf, "WIFI_SAVED", 10) == 0) {
         /* ESP32 berhasil menyimpan Wi-Fi baru ke NVS dan sedang restart */
         g_wifi_connected = false;
         ui_event_t ui_evt = {0};
@@ -1560,61 +1568,54 @@ void StartEsp32Task(void *argument)
 
 /* USER CODE BEGIN Header_StartStorageTask */
 /**
-* @brief Function implementing the Task_Storage thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the Task_Storage thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartStorageTask */
-void StartStorageTask(void *argument)
-{
+void StartStorageTask(void *argument) {
   /* USER CODE BEGIN StartStorageTask */
-  /* Coba mount MicroSD saat startup agar status badge langsung OK jika kartu terpasang */
-  if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK)
-  {
-    if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK)
-    {
+  /* Coba mount MicroSD saat startup agar status badge langsung OK jika kartu
+   * terpasang */
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
       g_sd_mounted = true;
     }
     osMutexRelease(sdioFatFsMutexHandle);
   }
 
-  /* Tunggu data masuk dari sdLogQueue */
-  for(;;)
-  {
+  /* Tunggu data masuk dari sdLogQueue (timeout 500ms agar watchdog tetap ter-feed) */
+  for (;;) {
+    Watchdog_CheckIn(WDT_TASK_STORAGE);
     sd_log_item_t sd_item;
-    if (osMessageQueueGet(sdLogQueueHandle, &sd_item, NULL, osWaitForever) == osOK)
-    {
+    if (osMessageQueueGet(sdLogQueueHandle, &sd_item, NULL, 500) ==
+        osOK) {
       /* Kunci sdioFatFsMutex untuk melindungi akses file system MicroSD */
-      if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK)
-      {
-        if (!g_sd_mounted)
-        {
-          if (f_mount(&SDFatFS, (TCHAR const*)SDPath, 1) == FR_OK)
-          {
+      if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK) {
+        if (!g_sd_mounted) {
+          if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
             g_sd_mounted = true;
           }
         }
 
-        if (g_sd_mounted)
-        {
+        if (g_sd_mounted) {
           /* Buka file log di MicroSD via FatFS (f_open, f_write, f_sync) */
-          if (f_open(&SDFile, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) == FR_OK)
-          {
+          if (f_open(&SDFile, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) ==
+              FR_OK) {
             f_lseek(&SDFile, f_size(&SDFile));
             UINT bw;
             char log_line[96];
             snprintf(log_line, sizeof(log_line),
-                     "20%02d-%02d-%02d %02d:%02d:%02d,UID:%02X%02X%02X%02X,LOG=%s\r\n",
-                     sd_item.year, sd_item.month, sd_item.date,
-                     sd_item.hours, sd_item.minutes, sd_item.seconds,
-                     sd_item.uid[0], sd_item.uid[1], sd_item.uid[2], sd_item.uid[3],
+                     "20%02d-%02d-%02d "
+                     "%02d:%02d:%02d,UID:%02X%02X%02X%02X,LOG=%s\r\n",
+                     sd_item.year, sd_item.month, sd_item.date, sd_item.hours,
+                     sd_item.minutes, sd_item.seconds, sd_item.uid[0],
+                     sd_item.uid[1], sd_item.uid[2], sd_item.uid[3],
                      sd_item.log_msg);
             f_write(&SDFile, log_line, strlen(log_line), &bw);
             f_sync(&SDFile);
             f_close(&SDFile);
-          }
-          else
-          {
+          } else {
             /* Jika gagal membuka file, asumsikan SD dicabut atau error */
             g_sd_mounted = false;
           }
@@ -1622,13 +1623,14 @@ void StartStorageTask(void *argument)
         osMutexRelease(sdioFatFsMutexHandle);
       }
 
-      /* Meneruskan payload absensi menuju espTxQueue untuk dikirim via Wi-Fi oleh Task_ESP32 */
+      /* Meneruskan payload absensi menuju espTxQueue untuk dikirim via Wi-Fi
+       * oleh Task_ESP32 */
       esp_tx_item_t esp_item = {0};
       snprintf(esp_item.payload, sizeof(esp_item.payload),
                "ATTEND:20%02d-%02d-%02d %02d:%02d:%02d|UID=%02X%02X%02X%02X\n",
-               sd_item.year, sd_item.month, sd_item.date,
-               sd_item.hours, sd_item.minutes, sd_item.seconds,
-               sd_item.uid[0], sd_item.uid[1], sd_item.uid[2], sd_item.uid[3]);
+               sd_item.year, sd_item.month, sd_item.date, sd_item.hours,
+               sd_item.minutes, sd_item.seconds, sd_item.uid[0], sd_item.uid[1],
+               sd_item.uid[2], sd_item.uid[3]);
       osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 50);
     }
   }
@@ -1636,20 +1638,18 @@ void StartStorageTask(void *argument)
 }
 
 /**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM6 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
+ * @brief  Period elapsed callback in non blocking mode
+ * @note   This function is called  when TIM6 interrupt took place, inside
+ * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+ * a global variable "uwTick" used as application time base.
+ * @param  htim : TIM handle
+ * @retval None
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM6)
-  {
+  if (htim->Instance == TIM6) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
@@ -1658,32 +1658,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
+  while (1) {
   }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* User can add his own implementation to report the file name and line
+     number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
+     line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

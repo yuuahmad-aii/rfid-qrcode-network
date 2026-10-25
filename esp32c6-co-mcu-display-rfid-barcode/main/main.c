@@ -16,6 +16,7 @@
 #include <string.h>
 #include <time.h>
 #include "esp_netif_sntp.h"
+#include "esp_task_wdt.h"
 #include "cJSON.h"
 #include "lwip/inet.h"
 #include "lwip/ip4_addr.h"
@@ -290,7 +291,9 @@ static void send_api_request(const char *identifier, const char *type) {
   esp_http_client_set_header(client, "Content-Type", "application/json");
   esp_http_client_set_post_field(client, post_data, strlen(post_data));
 
+  esp_task_wdt_reset();
   esp_err_t err = esp_http_client_perform(client);
+  esp_task_wdt_reset();
 
   if (err == ESP_OK) {
     int status_code = esp_http_client_get_status_code(client);
@@ -362,9 +365,11 @@ static void send_api_request(const char *identifier, const char *type) {
 }
 
 static void button_task(void *pvParameters) {
+  esp_task_wdt_add(NULL);
   while (1) {
-    // Wait for button press (debouncing simple check)
-    if (xSemaphoreTake(button_sem, portMAX_DELAY) == pdTRUE) {
+    esp_task_wdt_reset();
+    // Wait for button press (timeout 1000ms agar loop rutin menyegarkan watchdog)
+    if (xSemaphoreTake(button_sem, pdMS_TO_TICKS(1000)) == pdTRUE) {
       // Simple debounce: delay 50ms and check if button is still pressed
       vTaskDelay(pdMS_TO_TICKS(50));
       if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
@@ -501,7 +506,10 @@ static void uart_task(void *pvParameters) {
   char rfid_str[256];
   int rfid_idx = 0;
 
+  esp_task_wdt_add(NULL);
+
   while (1) {
+    esp_task_wdt_reset();
     int len =
         uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE - 1, pdMS_TO_TICKS(100));
     if (len > 0) {
@@ -587,6 +595,22 @@ static void uart_task(void *pvParameters) {
 }
 
 void app_main(void) {
+  // Cek apakah restart sebelumnya dipicu oleh Watchdog (Self-Healing Recovery)
+  esp_reset_reason_t rst_reason = esp_reset_reason();
+  if (rst_reason == ESP_RST_TASK_WDT || rst_reason == ESP_RST_WDT) {
+    ESP_LOGW(TAG, "WATCHDOG RESET DETECTED! Microcontroller self-recovered from deadlock/hang.");
+  }
+
+  // Inisialisasi Task Watchdog Timer (TWDT)
+  esp_task_wdt_config_t twdt_config = {
+      .timeout_ms = 8000,          // 8 detik timeout
+      .idle_core_mask = (1 << 0),   // pantau idle task core 0
+      .trigger_panic = true,        // auto-reboot via hardware panic saat hang
+  };
+  if (esp_task_wdt_init(&twdt_config) != ESP_OK) {
+      esp_task_wdt_reconfigure(&twdt_config);
+  }
+
   // Initialize NVS (required for WiFi)
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
