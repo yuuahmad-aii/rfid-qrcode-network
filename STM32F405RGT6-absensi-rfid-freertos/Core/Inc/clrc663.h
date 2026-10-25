@@ -55,6 +55,13 @@ uint8_t          CLRC663_ISO14443A_Select(uint8_t *uid, uint8_t *sak);
 bool             CLRC663_ReadCard(CLRC663_Card_t *card);
 const char*      CLRC663_GetCardTypeName(uint8_t sak, uint16_t atqa);
 
+/* Low-Power Card Detection (LPCD) API */
+bool             CLRC663_LPCD_Calibrate(uint8_t *out_i, uint8_t *out_q);
+void             CLRC663_LPCD_Start(uint8_t delta, uint16_t sleep_interval_ms);
+void             CLRC663_LPCD_Stop(void);
+bool             CLRC663_LPCD_IsActive(void);
+bool             CLRC663_LPCD_IsCardDetected(void);
+
 /* Low-level Register and FIFO API */
 uint8_t          CLRC663_ReadReg(uint8_t reg);
 void             CLRC663_WriteReg(uint8_t reg, uint8_t value);

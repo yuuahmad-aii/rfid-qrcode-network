@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "FreeRTOS.h"
+#include "bsp_driver_sd.h"
 #include "clrc663.h"
 #include "fonts.h"
 #include "gui_attendance.h"
@@ -34,6 +35,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 /* USER CODE END Includes */
 
@@ -56,8 +58,8 @@ typedef struct {
 #ifndef ESP_TX_ITEM_DEFINED
 #define ESP_TX_ITEM_DEFINED
 typedef struct {
-  char payload[64]; /* Formatted string packet to ESP32 (64 bytes) */
-} esp_tx_item_t;    /* Exactly 64 bytes (matches espTxQueue item size) */
+  char payload[128]; /* Formatted string packet to ESP32 (128 bytes) */
+} esp_tx_item_t;     /* Exactly 128 bytes (matches espTxQueue item size) */
 #endif
 /* USER CODE END PTD */
 
@@ -116,21 +118,21 @@ const osThreadAttr_t Task_RFID_attributes = {
 osThreadId_t Task_GUIHandle;
 const osThreadAttr_t Task_GUI_attributes = {
     .name = "Task_GUI",
-    .stack_size = 1600 * 4,
+    .stack_size = 2048 * 4,
     .priority = (osPriority_t)osPriorityAboveNormal,
 };
 /* Definitions for Task_ESP32 */
 osThreadId_t Task_ESP32Handle;
 const osThreadAttr_t Task_ESP32_attributes = {
     .name = "Task_ESP32",
-    .stack_size = 768 * 4,
+    .stack_size = 1024 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for Task_Storage */
 osThreadId_t Task_StorageHandle;
 const osThreadAttr_t Task_Storage_attributes = {
     .name = "Task_Storage",
-    .stack_size = 1024 * 4,
+    .stack_size = 1536 * 4,
     .priority = (osPriority_t)osPriorityBelowNormal,
 };
 /* Definitions for uiEventQueue */
@@ -159,6 +161,17 @@ volatile uint8_t g_clrc663_version = 0;
 volatile bool g_sd_mounted = false;
 volatile bool g_wifi_connected = false;
 volatile uint32_t g_attendance_total = 0;
+volatile bool g_bulk_sync_requested = false;
+
+wifi_info_t g_wifi_info = {
+    .status = "DISCONNECTED",
+    .ssid = "-",
+    .ip = "0.0.0.0",
+    .rssi = "- dBm",
+    .protocol = "Wi-Fi 6 (802.11ax)",
+    .mac = "-",
+    .is_wifi6 = false
+};
 
 /* RFID duplicate filter */
 static uint8_t g_prev_uid[10] = {0};
@@ -202,11 +215,12 @@ static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data);
 /* ========================================================================== */
 /*                COOPERATIVE MULTI-TASK WATCHDOG (IWDG) SUPERVISOR           */
 /* ========================================================================== */
-#define WDT_TASK_RFID    (1U << 0)
-#define WDT_TASK_GUI     (1U << 1)
-#define WDT_TASK_ESP32   (1U << 2)
+#define WDT_TASK_RFID (1U << 0)
+#define WDT_TASK_GUI (1U << 1)
+#define WDT_TASK_ESP32 (1U << 2)
 #define WDT_TASK_STORAGE (1U << 3)
-#define WDT_ALL_TASKS    (WDT_TASK_RFID | WDT_TASK_GUI | WDT_TASK_ESP32 | WDT_TASK_STORAGE)
+#define WDT_ALL_TASKS                                                          \
+  (WDT_TASK_RFID | WDT_TASK_GUI | WDT_TASK_ESP32 | WDT_TASK_STORAGE)
 
 static volatile uint32_t g_wdt_task_checkin = 0;
 
@@ -214,14 +228,13 @@ static volatile uint32_t g_wdt_task_checkin = 0;
  * @brief  Pencatatan check-in berkala dari masing-masing task FreeRTOS.
  *         Watchdog IWDG HANYA akan disegarkan jika SELURUH task aktif
  *         (RFID, GUI, ESP32, Storage) beroperasi normal.
- *         Jika salah satu task hang/deadlock, IWDG akan reset hardware dalam 2 detik.
+ *         Jika salah satu task hang/deadlock, IWDG akan reset hardware dalam 2
+ * detik.
  */
-void Watchdog_CheckIn(uint32_t task_mask)
-{
+void Watchdog_CheckIn(uint32_t task_mask) {
   taskENTER_CRITICAL();
   g_wdt_task_checkin |= task_mask;
-  if ((g_wdt_task_checkin & WDT_ALL_TASKS) == WDT_ALL_TASKS)
-  {
+  if ((g_wdt_task_checkin & WDT_ALL_TASKS) == WDT_ALL_TASKS) {
     HAL_IWDG_Refresh(&hiwdg);
     g_wdt_task_checkin = 0;
   }
@@ -277,8 +290,7 @@ int main(void) {
   HAL_IWDG_Refresh(&hiwdg);
 
   /* Cek apakah perangkat baru saja pulih mandiri dari Watchdog Reset */
-  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST))
-  {
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
     __HAL_RCC_CLEAR_RESET_FLAGS();
   }
   /* USER CODE END 2 */
@@ -308,13 +320,15 @@ int main(void) {
 
   /* Create the queue(s) */
   /* creation of uiEventQueue */
-  uiEventQueueHandle = osMessageQueueNew(8, 32, &uiEventQueue_attributes);
+  uiEventQueueHandle =
+      osMessageQueueNew(8, sizeof(ui_event_t), &uiEventQueue_attributes);
 
   /* creation of sdLogQueue */
   sdLogQueueHandle = osMessageQueueNew(16, 64, &sdLogQueue_attributes);
 
   /* creation of espTxQueue */
-  espTxQueueHandle = osMessageQueueNew(16, 64, &espTxQueue_attributes);
+  espTxQueueHandle =
+      osMessageQueueNew(32, sizeof(esp_tx_item_t), &espTxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -471,7 +485,8 @@ static void MX_IWDG_Init(void) {
   /* USER CODE END IWDG_Init 1 */
   hiwdg.Instance = IWDG;
   hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
-  hiwdg.Init.Reload = 2000; /* 32 kHz / 32 = 1000 Hz => 2000 reload = 2.0 detik timeout */
+  hiwdg.Init.Reload =
+      2000; /* 32 kHz / 32 = 1000 Hz => 2000 reload = 2.0 detik timeout */
   if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
     Error_Handler();
   }
@@ -510,6 +525,14 @@ static void MX_RTC_Init(void) {
   if (HAL_RTC_Init(&hrtc) != HAL_OK) {
     Error_Handler();
   }
+
+  /* Konfigurasi RTC Wakeup Timer (LSE 32.768 kHz / 16 = 2048 Hz).
+     Reload 2047 = periode 1.0 detik untuk membangunkan MCU secara aman dari
+     STOP mode */
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  HAL_NVIC_SetPriority(RTC_WKUP_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(RTC_WKUP_IRQn);
+  HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 2047, RTC_WAKEUPCLOCK_RTCCLK_DIV16);
 
   /* USER CODE BEGIN Check_RTC_BKUP */
   __HAL_RCC_PWR_CLK_ENABLE();
@@ -838,8 +861,8 @@ static void MX_GPIO_Init(void) {
 
   /*Configure GPIO pin : SPI3_IRQ_Pin */
   GPIO_InitStruct.Pin = SPI3_IRQ_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(SPI3_IRQ_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
@@ -865,8 +888,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (Task_RFIDHandle != NULL) {
       vTaskNotifyGiveFromISR((TaskHandle_t)Task_RFIDHandle,
                              &xHigherPriorityTaskWoken);
-      portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
+    if (Task_GUIHandle != NULL) {
+      vTaskNotifyGiveFromISR((TaskHandle_t)Task_GUIHandle,
+                             &xHigherPriorityTaskWoken);
+    }
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
   }
   /* Touch IRQ: PC6 (SPI2_IRQ) atau PB1 */
   else if (GPIO_Pin == SPI2_IRQ_Pin || GPIO_Pin == GPIO_PIN_1) {
@@ -1013,6 +1040,682 @@ bool Storage_TestDiagnostic(char *out_msg, size_t max_len) {
   }
 }
 
+/* Struktur RAM Cache Cepat untuk lookup kartu lokal (sub-milidetik) */
+typedef struct {
+  char uid[24];
+  char name[48];
+  char pos[32];
+  bool valid;
+} emp_cache_t;
+
+#define EMP_CACHE_SIZE 32
+static emp_cache_t s_emp_cache[EMP_CACHE_SIZE] = {0};
+static uint8_t s_emp_cache_idx = 0;
+
+/**
+ * @brief  Memuat data karyawan dari USERS.CSV ke RAM Cache saat booting
+ * (warm-up)
+ */
+void Storage_WarmupCache(void) {
+  if (osMutexAcquire(sdioFatFsMutexHandle, 1000) != osOK)
+    return;
+
+  if (!g_sd_mounted) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
+      g_sd_mounted = true;
+    } else {
+      osMutexRelease(sdioFatFsMutexHandle);
+      return;
+    }
+  }
+
+  FIL file;
+  if (f_open(&file, "USERS.CSV", FA_READ) == FR_OK) {
+    char line[128];
+    while (f_gets(line, sizeof(line), &file) != NULL) {
+      size_t l = strlen(line);
+      while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n' ||
+                       line[l - 1] == ' ')) {
+        line[--l] = '\0';
+      }
+      if (l < 3)
+        continue;
+      if (strncasecmp(line, "UID,", 4) == 0)
+        continue;
+
+      char *token_uid = strtok(line, ",");
+      char *token_name = strtok(NULL, ",");
+      char *token_pos = strtok(NULL, ",");
+
+      if (token_uid && token_name) {
+        while (*token_uid == ' ')
+          token_uid++;
+        while (*token_name == ' ')
+          token_name++;
+        if (token_pos) {
+          while (*token_pos == ' ')
+            token_pos++;
+        }
+
+        /* Filter entri dummy / placeholder Akses Diterima agar tidak masuk cache */
+        if (strcasecmp(token_name, "Akses Diterima") == 0 ||
+            strcasecmp(token_name, "Akses Diterima!") == 0 ||
+            strcasecmp(token_name, "UNKNOWN") == 0 ||
+            strcasecmp(token_name, "-") == 0 ||
+            strlen(token_name) < 2) {
+          continue;
+        }
+
+        strncpy(s_emp_cache[s_emp_cache_idx].uid, token_uid,
+                sizeof(s_emp_cache[s_emp_cache_idx].uid) - 1);
+        s_emp_cache[s_emp_cache_idx]
+            .uid[sizeof(s_emp_cache[s_emp_cache_idx].uid) - 1] = '\0';
+        strncpy(s_emp_cache[s_emp_cache_idx].name, token_name,
+                sizeof(s_emp_cache[s_emp_cache_idx].name) - 1);
+        s_emp_cache[s_emp_cache_idx]
+            .name[sizeof(s_emp_cache[s_emp_cache_idx].name) - 1] = '\0';
+        if (token_pos) {
+          strncpy(s_emp_cache[s_emp_cache_idx].pos, token_pos,
+                  sizeof(s_emp_cache[s_emp_cache_idx].pos) - 1);
+          s_emp_cache[s_emp_cache_idx]
+              .pos[sizeof(s_emp_cache[s_emp_cache_idx].pos) - 1] = '\0';
+        } else {
+          s_emp_cache[s_emp_cache_idx].pos[0] = '\0';
+        }
+        s_emp_cache[s_emp_cache_idx].valid = true;
+        s_emp_cache_idx = (s_emp_cache_idx + 1) % EMP_CACHE_SIZE;
+      }
+    }
+    f_close(&file);
+  }
+
+  osMutexRelease(sdioFatFsMutexHandle);
+}
+
+/**
+ * @brief  Mencari nama dan jabatan karyawan di RAM Cache atau MicroSD
+ * (USERS.CSV) Format CSV: UID,NAMA,JABATAN
+ */
+bool Storage_LookupEmployee(const char *uid_str, char *out_name,
+                            size_t name_len, char *out_pos, size_t pos_len) {
+  if (uid_str == NULL || strlen(uid_str) == 0)
+    return false;
+  if (out_name == NULL || name_len == 0)
+    return false;
+  out_name[0] = '\0';
+  if (out_pos && pos_len > 0)
+    out_pos[0] = '\0';
+
+  /* 1. Fast Path: Periksa RAM Cache lokal terlebih dahulu */
+  for (int i = 0; i < EMP_CACHE_SIZE; i++) {
+    if (s_emp_cache[i].valid && strcasecmp(s_emp_cache[i].uid, uid_str) == 0) {
+      if (strcasecmp(s_emp_cache[i].name, "Akses Diterima") == 0 ||
+          strcasecmp(s_emp_cache[i].name, "Akses Diterima!") == 0 ||
+          strcasecmp(s_emp_cache[i].name, "UNKNOWN") == 0 ||
+          strcasecmp(s_emp_cache[i].name, "-") == 0) {
+        continue;
+      }
+      strncpy(out_name, s_emp_cache[i].name, name_len - 1);
+      out_name[name_len - 1] = '\0';
+      if (out_pos && pos_len > 0) {
+        strncpy(out_pos, s_emp_cache[i].pos, pos_len - 1);
+        out_pos[pos_len - 1] = '\0';
+      }
+      return true;
+    }
+  }
+
+  /* 2. Slow Path: Cari di file fisik MicroSD (USERS.CSV) */
+  if (osMutexAcquire(sdioFatFsMutexHandle, 1000) != osOK)
+    return false;
+
+  if (!g_sd_mounted) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
+      g_sd_mounted = true;
+    } else {
+      osMutexRelease(sdioFatFsMutexHandle);
+      return false;
+    }
+  }
+
+  bool found = false;
+  FIL file;
+  FRESULT fr = f_open(&file, "USERS.CSV", FA_READ);
+  if (fr == FR_NO_FILE) {
+    /* File belum ada, buat template header kosong tanpa mock dummy */
+    fr = f_open(&file, "USERS.CSV", FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr == FR_OK) {
+      const char hdr[] = "UID,NAMA,JABATAN\r\n";
+      UINT bw;
+      f_write(&file, hdr, strlen(hdr), &bw);
+      f_sync(&file);
+      f_close(&file);
+      fr = f_open(&file, "USERS.CSV", FA_READ);
+    }
+  }
+
+  if (fr == FR_OK) {
+    char line[128];
+    while (f_gets(line, sizeof(line), &file) != NULL) {
+      size_t l = strlen(line);
+      while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n' ||
+                       line[l - 1] == ' ')) {
+        line[--l] = '\0';
+      }
+      if (l < 3)
+        continue;
+      if (strncasecmp(line, "UID,", 4) == 0)
+        continue;
+
+      char *token_uid = strtok(line, ",");
+      char *token_name = strtok(NULL, ",");
+      char *token_pos = strtok(NULL, ",");
+
+      if (token_uid && token_name) {
+        while (*token_uid == ' ')
+          token_uid++;
+        while (*token_name == ' ')
+          token_name++;
+        if (token_pos) {
+          while (*token_pos == ' ')
+            token_pos++;
+        }
+
+        /* Filter jika token_name adalah placeholder */
+        if (strcasecmp(token_name, "Akses Diterima") == 0 ||
+            strcasecmp(token_name, "Akses Diterima!") == 0 ||
+            strcasecmp(token_name, "UNKNOWN") == 0 ||
+            strcasecmp(token_name, "-") == 0 ||
+            strlen(token_name) < 2) {
+          continue;
+        }
+
+        if (strcasecmp(token_uid, uid_str) == 0) {
+          strncpy(out_name, token_name, name_len - 1);
+          out_name[name_len - 1] = '\0';
+          if (out_pos && token_pos) {
+            strncpy(out_pos, token_pos, pos_len - 1);
+            out_pos[pos_len - 1] = '\0';
+          }
+          found = true;
+
+          /* Masukkan ke RAM cache agar tap berikutnya instan */
+          strncpy(s_emp_cache[s_emp_cache_idx].uid, uid_str,
+                  sizeof(s_emp_cache[s_emp_cache_idx].uid) - 1);
+          s_emp_cache[s_emp_cache_idx]
+              .uid[sizeof(s_emp_cache[s_emp_cache_idx].uid) - 1] = '\0';
+          strncpy(s_emp_cache[s_emp_cache_idx].name, out_name,
+                  sizeof(s_emp_cache[s_emp_cache_idx].name) - 1);
+          s_emp_cache[s_emp_cache_idx]
+              .name[sizeof(s_emp_cache[s_emp_cache_idx].name) - 1] = '\0';
+          if (out_pos) {
+            strncpy(s_emp_cache[s_emp_cache_idx].pos, out_pos,
+                    sizeof(s_emp_cache[s_emp_cache_idx].pos) - 1);
+            s_emp_cache[s_emp_cache_idx]
+                .pos[sizeof(s_emp_cache[s_emp_cache_idx].pos) - 1] = '\0';
+          } else {
+            s_emp_cache[s_emp_cache_idx].pos[0] = '\0';
+          }
+          s_emp_cache[s_emp_cache_idx].valid = true;
+          s_emp_cache_idx = (s_emp_cache_idx + 1) % EMP_CACHE_SIZE;
+          break;
+        }
+      }
+    }
+    f_close(&file);
+  }
+
+  osMutexRelease(sdioFatFsMutexHandle);
+  return found;
+}
+
+/**
+ * @brief  Membaca seluruh pengguna yang terdaftar di MicroSD (USERS.CSV)
+ *         untuk ditampilkan di menu Admin "USERS"
+ */
+uint16_t Storage_GetRegisteredUsers(user_entry_t *out_users, uint16_t max_users) {
+  if (out_users == NULL || max_users == 0)
+    return 0;
+
+  if (osMutexAcquire(sdioFatFsMutexHandle, 1000) != osOK)
+    return 0;
+
+  if (!g_sd_mounted) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
+      g_sd_mounted = true;
+    } else {
+      osMutexRelease(sdioFatFsMutexHandle);
+      return 0;
+    }
+  }
+
+  uint16_t count = 0;
+  FIL file;
+  if (f_open(&file, "USERS.CSV", FA_READ) == FR_OK) {
+    char line[128];
+    while (count < max_users && f_gets(line, sizeof(line), &file) != NULL) {
+      size_t l = strlen(line);
+      while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n' || line[l - 1] == ' ')) {
+        line[--l] = '\0';
+      }
+      if (l < 3 || strncasecmp(line, "UID,", 4) == 0)
+        continue;
+
+      char *token_uid = strtok(line, ",");
+      char *token_name = strtok(NULL, ",");
+      char *token_pos = strtok(NULL, ",");
+
+      if (token_uid && token_name) {
+        while (*token_uid == ' ') token_uid++;
+        while (*token_name == ' ') token_name++;
+        if (token_pos) { while (*token_pos == ' ') token_pos++; }
+
+        /* Filter entri dummy / placeholder Akses Diterima */
+        if (strcasecmp(token_name, "Akses Diterima") == 0 ||
+            strcasecmp(token_name, "Akses Diterima!") == 0 ||
+            strcasecmp(token_name, "UNKNOWN") == 0 ||
+            strcasecmp(token_name, "-") == 0 ||
+            strlen(token_name) < 2) {
+          continue;
+        }
+
+        strncpy(out_users[count].uid, token_uid, sizeof(out_users[count].uid) - 1);
+        out_users[count].uid[sizeof(out_users[count].uid) - 1] = '\0';
+
+        strncpy(out_users[count].name, token_name, sizeof(out_users[count].name) - 1);
+        out_users[count].name[sizeof(out_users[count].name) - 1] = '\0';
+
+        if (token_pos && strlen(token_pos) > 0) {
+          strncpy(out_users[count].pos, token_pos, sizeof(out_users[count].pos) - 1);
+          out_users[count].pos[sizeof(out_users[count].pos) - 1] = '\0';
+        } else {
+          strcpy(out_users[count].pos, "-");
+        }
+        count++;
+      }
+    }
+    f_close(&file);
+  }
+
+  osMutexRelease(sdioFatFsMutexHandle);
+  return count;
+}
+
+/**
+ * @brief  Membersihkan file USERS.CSV dari baris "Akses Diterima" atau entri korup
+ */
+void Storage_SanitizeUsersFile(void) {
+  if (osMutexAcquire(sdioFatFsMutexHandle, 1000) != osOK)
+    return;
+
+  if (!g_sd_mounted) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
+      g_sd_mounted = true;
+    } else {
+      osMutexRelease(sdioFatFsMutexHandle);
+      return;
+    }
+  }
+
+  FIL f_in, f_out;
+  if (f_open(&f_in, "USERS.CSV", FA_READ) != FR_OK) {
+    osMutexRelease(sdioFatFsMutexHandle);
+    return;
+  }
+
+  bool need_rewrite = false;
+  char line[128];
+  while (f_gets(line, sizeof(line), &f_in) != NULL) {
+    if (strstr(line, "Akses Diterima") != NULL) {
+      need_rewrite = true;
+      break;
+    }
+  }
+
+  if (need_rewrite) {
+    f_lseek(&f_in, 0);
+    if (f_open(&f_out, "USERS.TMP", FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+      UINT bw;
+      while (f_gets(line, sizeof(line), &f_in) != NULL) {
+        if (strstr(line, "Akses Diterima") == NULL) {
+          f_write(&f_out, line, strlen(line), &bw);
+        }
+      }
+      f_sync(&f_out);
+      f_close(&f_out);
+      f_close(&f_in);
+      f_unlink("USERS.CSV");
+      f_rename("USERS.TMP", "USERS.CSV");
+      osMutexRelease(sdioFatFsMutexHandle);
+      return;
+    }
+  }
+
+  f_close(&f_in);
+  osMutexRelease(sdioFatFsMutexHandle);
+}
+
+/**
+ * @brief  Menyimpan atau memperbarui pasangan UID kartu dan Nama Karyawan ke
+ * MicroSD (USERS.CSV) Digunakan untuk Lazy Caching saat pertama kali tap kartu
+ * berhasil divalidasi oleh server.
+ */
+bool Storage_SaveEmployee(const char *uid_str, const char *emp_name,
+                          const char *emp_pos) {
+  if (uid_str == NULL || strlen(uid_str) == 0)
+    return false;
+  if (emp_name == NULL || strlen(emp_name) < 2)
+    return false;
+
+  /* JANGAN PERNAH simpan Akses Diterima atau placeholder sebagai nama */
+  if (strcasecmp(emp_name, "Akses Diterima") == 0 ||
+      strcasecmp(emp_name, "Akses Diterima!") == 0 ||
+      strcasecmp(emp_name, "UNKNOWN") == 0 ||
+      strcasecmp(emp_name, "-") == 0) {
+    return false;
+  }
+
+  /* 1. Update/Simpan ke Fast RAM Cache */
+  bool in_ram = false;
+  for (int i = 0; i < EMP_CACHE_SIZE; i++) {
+    if (s_emp_cache[i].valid && strcasecmp(s_emp_cache[i].uid, uid_str) == 0) {
+      strncpy(s_emp_cache[i].name, emp_name, sizeof(s_emp_cache[i].name) - 1);
+      s_emp_cache[i].name[sizeof(s_emp_cache[i].name) - 1] = '\0';
+      if (emp_pos) {
+        strncpy(s_emp_cache[i].pos, emp_pos, sizeof(s_emp_cache[i].pos) - 1);
+        s_emp_cache[i].pos[sizeof(s_emp_cache[i].pos) - 1] = '\0';
+      }
+      in_ram = true;
+      break;
+    }
+  }
+  if (!in_ram) {
+    strncpy(s_emp_cache[s_emp_cache_idx].uid, uid_str,
+            sizeof(s_emp_cache[s_emp_cache_idx].uid) - 1);
+    s_emp_cache[s_emp_cache_idx]
+        .uid[sizeof(s_emp_cache[s_emp_cache_idx].uid) - 1] = '\0';
+    strncpy(s_emp_cache[s_emp_cache_idx].name, emp_name,
+            sizeof(s_emp_cache[s_emp_cache_idx].name) - 1);
+    s_emp_cache[s_emp_cache_idx]
+        .name[sizeof(s_emp_cache[s_emp_cache_idx].name) - 1] = '\0';
+    if (emp_pos) {
+      strncpy(s_emp_cache[s_emp_cache_idx].pos, emp_pos,
+              sizeof(s_emp_cache[s_emp_cache_idx].pos) - 1);
+      s_emp_cache[s_emp_cache_idx]
+          .pos[sizeof(s_emp_cache[s_emp_cache_idx].pos) - 1] = '\0';
+    } else {
+      s_emp_cache[s_emp_cache_idx].pos[0] = '\0';
+    }
+    s_emp_cache[s_emp_cache_idx].valid = true;
+    s_emp_cache_idx = (s_emp_cache_idx + 1) % EMP_CACHE_SIZE;
+  }
+
+  /* 2. Pastikan MicroSD terpasang dan mount aktif */
+  if (osMutexAcquire(sdioFatFsMutexHandle, 1000) != osOK)
+    return false;
+
+  if (!g_sd_mounted) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
+      g_sd_mounted = true;
+    } else {
+      osMutexRelease(sdioFatFsMutexHandle);
+      return false;
+    }
+  }
+
+  /* 3. Cek apakah kartu SUDAH TERTULIS di file fisik USERS.CSV */
+  FIL file;
+  FRESULT fr = f_open(&file, "USERS.CSV", FA_READ);
+  bool already_in_file = false;
+
+  if (fr == FR_OK) {
+    char line[128];
+    while (f_gets(line, sizeof(line), &file) != NULL) {
+      size_t l = strlen(line);
+      while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n' ||
+                       line[l - 1] == ' ')) {
+        line[--l] = '\0';
+      }
+      if (l < 3)
+        continue;
+      if (strncasecmp(line, "UID,", 4) == 0)
+        continue;
+
+      char *token_uid = strtok(line, ",");
+      char *token_name = strtok(NULL, ",");
+
+      if (token_uid && token_name) {
+        while (*token_uid == ' ')
+          token_uid++;
+        while (*token_name == ' ')
+          token_name++;
+        if (strcasecmp(token_uid, uid_str) == 0 &&
+            strcmp(token_name, emp_name) == 0) {
+          already_in_file = true;
+          break;
+        }
+      }
+    }
+    f_close(&file);
+  }
+
+  if (already_in_file) {
+    osMutexRelease(sdioFatFsMutexHandle);
+    return true; /* Sudah ada di MicroSD secara fisik, tidak perlu menulis ulang
+                  */
+  }
+
+  /* 4. Tulis langsung ke USERS.CSV di MicroSD dan FLUSH fisik (f_sync) */
+  fr = f_open(&file, "USERS.CSV", FA_OPEN_ALWAYS | FA_WRITE);
+  if (fr == FR_OK) {
+    if (f_size(&file) == 0) {
+      const char *hdr = "UID,NAMA,JABATAN\r\n";
+      UINT bw;
+      f_write(&file, hdr, strlen(hdr), &bw);
+    }
+    f_lseek(&file, f_size(&file));
+
+    char new_line[128];
+    snprintf(new_line, sizeof(new_line), "%s,%s,%s\r\n", uid_str, emp_name,
+             (emp_pos && strlen(emp_pos) > 0) ? emp_pos : "-");
+    UINT bw;
+    f_write(&file, new_line, strlen(new_line), &bw);
+    f_sync(&file); /* Penting: Paksa tulis ke flash fisik SD card sebelum daya
+                      dicabut */
+    f_close(&file);
+    osMutexRelease(sdioFatFsMutexHandle);
+    return true;
+  }
+
+  osMutexRelease(sdioFatFsMutexHandle);
+  return false;
+}
+
+/**
+ * @brief  Menghitung jumlah transaksi di antrean PENDING.CSV yang belum
+ * tersinkron
+ */
+uint32_t Storage_GetPendingCount(void) {
+  if (!g_sd_mounted)
+    return 0;
+  if (osMutexAcquire(sdioFatFsMutexHandle, 100) != osOK)
+    return 0;
+
+  uint32_t count = 0;
+  FIL file;
+  if (f_open(&file, "PENDING.CSV", FA_READ) == FR_OK) {
+    char line[128];
+    while (f_gets(line, sizeof(line), &file) != NULL) {
+      size_t l = strlen(line);
+      while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n'))
+        line[--l] = '\0';
+      if (l > 5)
+        count++;
+    }
+    f_close(&file);
+  }
+  osMutexRelease(sdioFatFsMutexHandle);
+  return count;
+}
+
+/**
+ * @brief  Memicu proses bulk sync data antrean ke ESP32
+ */
+void Storage_TriggerBulkSync(void) {
+  if (!g_sd_mounted) {
+    GUI_Attendance_SetBulkStatus("Gagal: MicroSD tidak terpasang!", false);
+    return;
+  }
+  if (!g_wifi_connected) {
+    GUI_Attendance_SetBulkStatus("Gagal: Wi-Fi belum terhubung!", false);
+    return;
+  }
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK) {
+    GUI_Attendance_SetBulkStatus("Gagal: MicroSD sibuk!", false);
+    return;
+  }
+
+  FIL file;
+  if (f_open(&file, "PENDING.CSV", FA_READ) != FR_OK) {
+    osMutexRelease(sdioFatFsMutexHandle);
+    GUI_Attendance_SetBulkStatus("Antrean kosong (0 data).", true);
+    return;
+  }
+
+  /* 1. Hitung berapa item valid yang akan dikirim (maksimum 50 item per batch)
+   */
+  uint32_t count = 0;
+  char line[128];
+  while (count < 50 && f_gets(line, sizeof(line), &file) != NULL) {
+    size_t l = strlen(line);
+    while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n'))
+      line[--l] = '\0';
+    if (l > 5) {
+      count++;
+    }
+  }
+
+  if (count == 0) {
+    f_close(&file);
+    osMutexRelease(sdioFatFsMutexHandle);
+    GUI_Attendance_SetBulkStatus("Antrean kosong (0 data).", true);
+    return;
+  }
+
+  /* Rewind ke awal file untuk streaming pengiriman data */
+  f_lseek(&file, 0);
+
+  /* Kirim sinyal BULK_START */
+  esp_tx_item_t tx_start = {0};
+  snprintf(tx_start.payload, sizeof(tx_start.payload), "BULK_START:%lu\n",
+           (unsigned long)count);
+  osMessageQueuePut(espTxQueueHandle, &tx_start, 0, 100);
+
+  /* 2. Streaming baris per baris tanpa alokasi array besar pada stack */
+  uint32_t sent = 0;
+  while (sent < count && f_gets(line, sizeof(line), &file) != NULL) {
+    size_t l = strlen(line);
+    while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n'))
+      line[--l] = '\0';
+    if (l > 5) {
+      esp_tx_item_t tx_item = {0};
+      snprintf(tx_item.payload, sizeof(tx_item.payload), "BULK_ITEM:%.116s\n",
+               line);
+      osMessageQueuePut(espTxQueueHandle, &tx_item, 0, 100);
+      sent++;
+      Watchdog_CheckIn(WDT_TASK_STORAGE);
+      osDelay(10);
+    }
+  }
+
+  f_close(&file);
+  osMutexRelease(sdioFatFsMutexHandle);
+
+  /* Kirim sinyal BULK_END */
+  esp_tx_item_t tx_end = {0};
+  snprintf(tx_end.payload, sizeof(tx_end.payload), "BULK_END\n");
+  osMessageQueuePut(espTxQueueHandle, &tx_end, 0, 100);
+
+  GUI_Attendance_SetBulkStatus("Mengirim data bulk ke server...", true);
+}
+
+/**
+ * @brief  Menghapus batch data transaksi yang sudah sukses diterima server
+ */
+void Storage_RemovePendingBatch(uint32_t count) {
+  if (count == 0 || !g_sd_mounted)
+    return;
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK)
+    return;
+
+  FIL fin, fout;
+  if (f_open(&fin, "PENDING.CSV", FA_READ) == FR_OK) {
+    if (f_open(&fout, "PEND_TMP.CSV", FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+      char line[128];
+      uint32_t skipped = 0;
+      UINT bw;
+      while (f_gets(line, sizeof(line), &fin) != NULL) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n'))
+          line[--l] = '\0';
+        if (l > 5) {
+          if (skipped < count) {
+            skipped++;
+          } else {
+            f_write(&fout, line, strlen(line), &bw);
+            f_write(&fout, "\r\n", 2, &bw);
+          }
+        }
+      }
+      f_close(&fout);
+      f_close(&fin);
+      f_unlink("PENDING.CSV");
+      f_rename("PEND_TMP.CSV", "PENDING.CSV");
+    } else {
+      f_close(&fin);
+    }
+  }
+  osMutexRelease(sdioFatFsMutexHandle);
+}
+
+/**
+ * @brief  Menghapus satu record transaksi spesifik berdasarkan transaction UID
+ */
+void Storage_RemovePendingUid(const char *txn_uid) {
+  if (txn_uid == NULL || strlen(txn_uid) == 0 || !g_sd_mounted)
+    return;
+  if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK)
+    return;
+
+  FIL fin, fout;
+  if (f_open(&fin, "PENDING.CSV", FA_READ) == FR_OK) {
+    if (f_open(&fout, "PEND_TMP.CSV", FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+      char line[128];
+      UINT bw;
+      while (f_gets(line, sizeof(line), &fin) != NULL) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n'))
+          line[--l] = '\0';
+        if (l > 5) {
+          if (strncmp(line, txn_uid, strlen(txn_uid)) == 0 &&
+              line[strlen(txn_uid)] == '|') {
+            continue; /* Lewati baris ini (dihapus) */
+          }
+          f_write(&fout, line, strlen(line), &bw);
+          f_write(&fout, "\r\n", 2, &bw);
+        }
+      }
+      f_close(&fout);
+      f_close(&fin);
+      f_unlink("PENDING.CSV");
+      f_rename("PEND_TMP.CSV", "PENDING.CSV");
+    } else {
+      f_close(&fin);
+    }
+  }
+  osMutexRelease(sdioFatFsMutexHandle);
+}
+
 /**
  * @brief  Pengujian diagnostik hardware RFID Reader CLRC663 via SPI3
  */
@@ -1133,6 +1836,39 @@ static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
  * @retval None
  */
 /* USER CODE END Header_StartRfidTask */
+/* ========================================================================== */
+/*                STM32 LOW POWER STOP MODE WITH REGULATOR LP                 */
+/* ========================================================================== */
+void SystemClock_RestoreFromStop(void) {
+  if (__HAL_RCC_GET_SYSCLK_SOURCE() != RCC_SYSCLKSOURCE_STATUS_PLLCLK) {
+    SystemClock_Config();
+  }
+}
+
+void Power_EnterStopMode(void) {
+  /* 1. Feed IWDG sebelum tidur */
+  HAL_IWDG_Refresh(&hiwdg);
+
+  /* 2. Suspend SysTick agar interrupt SysTick 1ms tidak membangunkan MCU */
+  HAL_SuspendTick();
+
+  /* 3. Masuk ke STOP Mode dengan Regulator Low Power.
+     Konsumsi arus STM32F405 turun dari ~50mA menjadi ~300uA.
+     MCU akan bangun jika ada sinyal EXTI (PA15 RFID LPCD, PC6 Touch, atau RTC
+     1s). */
+  HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+
+  /* 4. MCU Bangun: Clock secara otomatis beralih ke HSI 16MHz.
+     Segera kembalikan clock ke 168MHz (HSE + PLL). */
+  SystemClock_RestoreFromStop();
+
+  /* 5. Resume SysTick */
+  HAL_ResumeTick();
+
+  /* 6. Segarkan IWDG segera setelah bangun */
+  HAL_IWDG_Refresh(&hiwdg);
+}
+
 void StartRfidTask(void *argument) {
   /* USER CODE BEGIN 5 */
   /* 1. Inisialisasi Hardware RFID Reader NXP CLRC66303 */
@@ -1142,6 +1878,8 @@ void StartRfidTask(void *argument) {
     g_clrc663_version = CLRC663_ReadVersion();
     CLRC663_AntennaOn();
     CLRC663_SetupISO14443A();
+    /* Lakukan kalibrasi baseline demodulator I/Q untuk LPCD */
+    CLRC663_LPCD_Calibrate(NULL, NULL);
   } else {
     g_clrc663_ready = false;
     g_clrc663_version = CLRC663_ReadVersion();
@@ -1151,22 +1889,67 @@ void StartRfidTask(void *argument) {
   /* Infinite loop */
   for (;;) {
     Watchdog_CheckIn(WDT_TASK_RFID);
-    /* Tidur menunggu Task Notification dari RFID_IRQ (PA15/EXTI15_10 atau PA8).
-       Diberi timeout 50 ms sebagai fallback polling agar pembacaan kartu tetap
-       responsif. */
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+
+    /* Cek apakah layar sedang dalam kondisi sleep / idle */
+    bool is_asleep = GUI_Attendance_IsSleeping();
+
+    if (is_asleep && g_clrc663_ready) {
+      /* Saat layar sleep: masukkan CLRC663 ke mode LPCD (Low-Power Card
+         Detection). Antena pemancar RF 13.56 MHz dimatikan (arus turun dari
+         ~120mA ke ~30uA). Chip bangun setiap 300 ms secara periodik. Jika ada
+         kartu mendekat, pin IRQ (PA15) akan menarik interrupt EXTI untuk
+         membangunkan task ini. */
+      if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
+        if (!CLRC663_LPCD_IsActive()) {
+          uint8_t delta = (g_app_settings.lpcd_delta >= 1 && g_app_settings.lpcd_delta <= 10) ? g_app_settings.lpcd_delta : 3;
+          uint16_t interval = (g_app_settings.lpcd_interval_ms >= 100 && g_app_settings.lpcd_interval_ms <= 2000) ? g_app_settings.lpcd_interval_ms : 300;
+          CLRC663_LPCD_Start(delta, interval);
+        }
+        osMutexRelease(spi2MutexHandle);
+      }
+
+      /* Tidur hemat daya menunggu Task Notification dari PA15 EXTI (kartu
+         menempel) atau timeout 1000 ms agar Watchdog tetap ter-feed */
+      uint32_t woken = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+      if (woken > 0) {
+        /* Terdeteksi interupsi dari pin PA15 (kartu mendekat saat LPCD) */
+        if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
+          CLRC663_LPCD_Stop();
+          osMutexRelease(spi2MutexHandle);
+        }
+        /* Bangunkan layar segera */
+        GUI_Attendance_Wakeup();
+        /* Beri waktu 15ms agar transponder pasif kartu RFID ter-charge oleh
+         * medan RF */
+        osDelay(15);
+      } else {
+        /* Timeout 1s: loop kembali untuk check-in watchdog */
+        continue;
+      }
+    } else {
+      /* Saat layar aktif / baru bangun: pastikan antena menyala dan mode LPCD
+       * dimatikan */
+      if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
+        if (CLRC663_LPCD_IsActive()) {
+          CLRC663_LPCD_Stop();
+        }
+        osMutexRelease(spi2MutexHandle);
+      }
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+    }
 
     /* Kunci spi2Mutex sebelum mengakses reader kartu */
-    if (osMutexAcquire(spi2MutexHandle, 20) == osOK) {
+    if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
       if (!g_clrc663_ready) {
         if (CLRC663_Init(&hspi3) == CLRC663_OK) {
           g_clrc663_ready = true;
           CLRC663_AntennaOn();
           CLRC663_SetupISO14443A();
+          CLRC663_LPCD_Calibrate(NULL, NULL);
         }
       }
 
-      if (g_clrc663_ready) {
+      if (g_clrc663_ready && !CLRC663_LPCD_IsActive()) {
         CLRC663_Card_t card;
         if (CLRC663_ReadCard(&card)) {
           /* Debounce kartu yang sama dalam durasi 1500 ms */
@@ -1194,51 +1977,143 @@ void StartRfidTask(void *argument) {
             HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
             HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
-            /* Bunyikan BUZZER dan nyalakan USER LED singkat (75 ms) */
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
-                              GPIO_PIN_SET);
-            HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-            osDelay(75);
-            HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
-                              GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
-
-            /* Kirim event deteksi kartu ke uiEventQueue untuk ditampilkan
-             * Task_GUI */
-            ui_event_t ui_evt = {0};
-            ui_evt.type = UI_EVENT_RFID_CARD_DETECTED;
-            ui_evt.status = 1;
-            ui_evt.uid_len = card.uid_len;
-            memcpy(ui_evt.uid, card.uid, card.uid_len);
-            snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d WIB",
-                     sTime.Hours, sTime.Minutes, sTime.Seconds);
-            osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-
-            /* Kirim data absensi ke sdLogQueue untuk ditulis ke MicroSD oleh
-             * Task_Storage */
-            sd_log_item_t sd_item = {0};
-            sd_item.year = sDate.Year;
-            sd_item.month = sDate.Month;
-            sd_item.date = sDate.Date;
-            sd_item.hours = sTime.Hours;
-            sd_item.minutes = sTime.Minutes;
-            sd_item.seconds = sTime.Seconds;
-            sd_item.uid_len = card.uid_len;
-            memcpy(sd_item.uid, card.uid, card.uid_len);
-            snprintf(sd_item.log_msg, sizeof(sd_item.log_msg), "CARD_TAP_OK");
-            osMessageQueuePut(sdLogQueueHandle, &sd_item, 0, 10);
-
-            /* Kirim permintaan verifikasi ke ESP32 via espTxQueue */
-            esp_tx_item_t esp_item = {0};
-            if (card.uid_len >= 4) {
-              snprintf(esp_item.payload, sizeof(esp_item.payload),
-                       "RFID:%02X%02X%02X%02X\n", card.uid[0], card.uid[1],
-                       card.uid[2], card.uid[3]);
-            } else {
-              snprintf(esp_item.payload, sizeof(esp_item.payload),
-                       "RFID:UNKNOWN\n");
+            char uid_str[24] = {0};
+            int offset = 0;
+            for (uint8_t i = 0; i < card.uid_len && i < 10 &&
+                                offset < (int)sizeof(uid_str) - 3;
+                 i++) {
+              offset += snprintf(uid_str + offset, sizeof(uid_str) - offset,
+                                 "%02X", card.uid[i]);
             }
-            osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 10);
+            if (offset == 0) {
+              snprintf(uid_str, sizeof(uid_str), "UNKNOWN");
+            }
+
+            /* 1. Offline-First: Periksa apakah kartu sudah tersimpan di memori
+             * lokal */
+            char emp_name[48] = {0};
+            char emp_pos[32] = {0};
+            bool emp_found = Storage_LookupEmployee(
+                uid_str, emp_name, sizeof(emp_name), emp_pos, sizeof(emp_pos));
+
+            if (emp_found && strlen(emp_name) > 0) {
+              /* =============================================================
+               */
+              /* KONDISI A: DATA DITEMUKAN DI LOKAL (OFFLINE-FIRST) */
+              /* =============================================================
+               */
+              /* Bunyikan 1x beep sukses & nyalakan USER LED singkat (75 ms) */
+              HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                GPIO_PIN_SET);
+              HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+              osDelay(75);
+              HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin,
+                                GPIO_PIN_RESET);
+
+              /* Tampilkan deteksi kartu dan nama karyawan ke GUI */
+              ui_event_t ui_evt = {0};
+              ui_evt.type = UI_EVENT_RFID_CARD_DETECTED;
+              ui_evt.status = 1;
+              ui_evt.uid_len = card.uid_len;
+              memcpy(ui_evt.uid, card.uid, card.uid_len);
+              snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d WIB",
+                       sTime.Hours, sTime.Minutes, sTime.Seconds);
+              osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+
+              ui_event_t ui_ok = {0};
+              ui_ok.type = UI_EVENT_ATTENDANCE_SUCCESS;
+              ui_ok.status = 1;
+              strncpy(ui_ok.extra, emp_name, sizeof(ui_ok.extra) - 1);
+              osMessageQueuePut(uiEventQueueHandle, &ui_ok, 0, 10);
+
+              /* Kirim data absensi ke sdLogQueue untuk disimpan ke ATTEND.CSV &
+               * PENDING.CSV */
+              sd_log_item_t sd_item = {0};
+              sd_item.year = sDate.Year;
+              sd_item.month = sDate.Month;
+              sd_item.date = sDate.Date;
+              sd_item.hours = sTime.Hours;
+              sd_item.minutes = sTime.Minutes;
+              sd_item.seconds = sTime.Seconds;
+              sd_item.uid_len = card.uid_len;
+              memcpy(sd_item.uid, card.uid, card.uid_len);
+              strncpy(sd_item.log_msg, emp_name, sizeof(sd_item.log_msg) - 1);
+              osMessageQueuePut(sdLogQueueHandle, &sd_item, 0, 10);
+
+            } else {
+              /* =============================================================
+               */
+              /* KONDISI B: KARTU BELUM ADA DI LOKAL (TAP PERTAMA / BARU) */
+              /* =============================================================
+               */
+              if (!g_wifi_connected) {
+                /* Wi-Fi mati: Kartu baru tidak bisa diverifikasi ke server */
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_SET);
+                osDelay(250);
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_RESET);
+
+                ui_event_t ui_fail = {0};
+                ui_fail.type = UI_EVENT_ATTENDANCE_REJECTED;
+                ui_fail.status = 0;
+                strncpy(ui_fail.extra, "Kartu Baru (Offline)",
+                        sizeof(ui_fail.extra) - 1);
+                osMessageQueuePut(uiEventQueueHandle, &ui_fail, 0, 10);
+
+              } else {
+                /* Wi-Fi aktif: Tanya server via ESP32 "Kartu ini milik siapa?"
+                 */
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_SET);
+                osDelay(30);
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_RESET);
+
+                ui_event_t ui_evt = {0};
+                ui_evt.type = UI_EVENT_RFID_CARD_DETECTED;
+                ui_evt.status = 1;
+                ui_evt.uid_len = card.uid_len;
+                memcpy(ui_evt.uid, card.uid, card.uid_len);
+                strncpy(ui_evt.extra, "Cek Server...",
+                        sizeof(ui_evt.extra) - 1);
+                osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+
+                char time_iso[32];
+                snprintf(time_iso, sizeof(time_iso),
+                         "20%02d-%02d-%02d %02d:%02d:%02d", sDate.Year,
+                         sDate.Month, sDate.Date, sTime.Hours, sTime.Minutes,
+                         sTime.Seconds);
+
+                char dev_code_buf[32];
+                if (g_app_settings.device_code[0] != '\0') {
+                  strncpy(dev_code_buf, g_app_settings.device_code,
+                          sizeof(dev_code_buf) - 1);
+                  dev_code_buf[sizeof(dev_code_buf) - 1] = '\0';
+                } else {
+                  uint16_t dev_id =
+                      (uint16_t)((HAL_GetUIDw0() ^ HAL_GetUIDw1() ^
+                                  HAL_GetUIDw2()) &
+                                 0xFFFF);
+                  snprintf(dev_code_buf, sizeof(dev_code_buf), "GATE-%04X",
+                           (unsigned int)dev_id);
+                }
+
+                char txn_uid[96];
+                snprintf(txn_uid, sizeof(txn_uid),
+                         "%.24s_%02d%02d%02d%02d%02d%02d_%.24s", dev_code_buf,
+                         sDate.Year, sDate.Month, sDate.Date, sTime.Hours,
+                         sTime.Minutes, sTime.Seconds, uid_str);
+
+                esp_tx_item_t esp_item = {0};
+                snprintf(esp_item.payload, sizeof(esp_item.payload),
+                         "TXN:%.64s|%.20s|%.24s|rfid|tap\n", txn_uid, time_iso,
+                         uid_str);
+                osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 50);
+              }
+            }
           }
         }
       }
@@ -1307,6 +2182,21 @@ void StartGuiTask(void *argument) {
 
     /* 3. Manajemen daya & refresh GUI */
     if (GUI_Attendance_IsSleeping()) {
+      /* Jika layar sedang sleep, semua antrean kosong, dan CLRC663 sudah dalam
+         mode LPCD: Tidurkan STM32F405 ke STOP Mode (Low-Power Regulator).
+         Konsumsi daya STM32 anjlok dari ~50mA ke ~300 uA.
+         MCU akan bangun instan jika ada:
+         - Kartu menempel (PA15 EXTI dari CLRC663 LPCD)
+         - Sentuhan layar (PC6 EXTI dari XPT2046)
+         - Tombol fisik (PA0 EXTI)
+         - Interupsi RTC Wakeup 1s berkala untuk feeding Watchdog */
+      if (osMessageQueueGetCount(uiEventQueueHandle) == 0 &&
+          osMessageQueueGetCount(espTxQueueHandle) == 0 &&
+          osMessageQueueGetCount(sdLogQueueHandle) == 0 &&
+          CLRC663_LPCD_IsActive()) {
+        Power_EnterStopMode();
+      }
+
       /* Saat layar dalam mode sleep:
        * - Tunggu interupsi sentuh dari XPT2046 (/PENIRQ jatuh ke LOW via EXTI)
        * atau timeout 50ms
@@ -1323,6 +2213,7 @@ void StartGuiTask(void *argument) {
           g_sd_mounted = false;
           if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK) {
             f_mount(NULL, (TCHAR const *)SDPath, 0);
+            BSP_SD_DeInit();
             osMutexRelease(sdioFatFsMutexHandle);
           }
           GUI_Attendance_Wakeup();
@@ -1364,6 +2255,7 @@ void StartGuiTask(void *argument) {
             g_sd_mounted = false;
             if (osMutexAcquire(sdioFatFsMutexHandle, 100) == osOK) {
               f_mount(NULL, (TCHAR const *)SDPath, 0);
+              BSP_SD_DeInit();
               osMutexRelease(sdioFatFsMutexHandle);
             }
             GUI_Attendance_ShowSDWarning(true);
@@ -1385,17 +2277,21 @@ void StartGuiTask(void *argument) {
           /* Kartu sebelumnya belum terpasang: cek apakah baru dimasukkan
            * kembali */
           if (sd_phys_present) {
+            osDelay(100); /* Debounce stabilisasi pin deteksi mekanik */
             if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK) {
-              if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
-                g_sd_mounted = true;
-                GUI_Attendance_ShowSDWarning(false);
+              BSP_SD_DeInit();
+              if (BSP_SD_Init() == MSD_OK) {
+                if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
+                  g_sd_mounted = true;
+                  GUI_Attendance_ShowSDWarning(false);
 
-                /* Nada konfirmasi 1x beep tanda MicroSD terpasang kembali */
-                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
-                                  GPIO_PIN_SET);
-                osDelay(60);
-                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
-                                  GPIO_PIN_RESET);
+                  /* Nada konfirmasi 1x beep tanda MicroSD terpasang kembali */
+                  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                    GPIO_PIN_SET);
+                  osDelay(60);
+                  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                    GPIO_PIN_RESET);
+                }
               }
               osMutexRelease(sdioFatFsMutexHandle);
             }
@@ -1433,8 +2329,23 @@ void StartEsp32Task(void *argument) {
   /* Aktifkan penerimaan UART1 interrupt dari ESP32-C6 */
   HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
 
-  /* Beri jeda sejenak lalu minta status koneksi Wi-Fi awal ke ESP32 */
-  osDelay(300);
+  /* Beri jeda sejenak lalu kirim identitas device & konfigurasi ke ESP32 */
+  osDelay(400);
+
+  esp_tx_item_t init_dev = {0};
+  snprintf(init_dev.payload, sizeof(init_dev.payload), "CMD:SET_DEVICE:%s|%s\n",
+           g_app_settings.device_code, g_app_settings.device_name);
+  HAL_UART_Transmit(&huart1, (uint8_t *)init_dev.payload,
+                    strlen(init_dev.payload), 100);
+  osDelay(50);
+
+  esp_tx_item_t init_sync = {0};
+  snprintf(init_sync.payload, sizeof(init_sync.payload),
+           "CMD:SET_SYNC_MODE:%d\n", (int)g_app_settings.sync_mode);
+  HAL_UART_Transmit(&huart1, (uint8_t *)init_sync.payload,
+                    strlen(init_sync.payload), 100);
+  osDelay(50);
+
   const char *cmd_wifi_status = "CMD:GET_WIFI_STATUS\n";
   HAL_UART_Transmit(&huart1, (uint8_t *)cmd_wifi_status,
                     strlen(cmd_wifi_status), 100);
@@ -1454,47 +2365,229 @@ void StartEsp32Task(void *argument) {
     if (uart1_rx_ready) {
       uart1_rx_ready = 0;
 
-      if (strncmp(uart1_rx_buf, "GRANTED:", 8) == 0) {
+      if (strncmp(uart1_rx_buf, "TXN_OK:", 7) == 0) {
+        /* Realtime transaksi sukses dikirim ke server: hapus dari queue lokal
+         */
+        char *txn_uid = uart1_rx_buf + 7;
+        size_t l = strlen(txn_uid);
+        while (l > 0 && (txn_uid[l - 1] == '\r' || txn_uid[l - 1] == '\n'))
+          txn_uid[--l] = '\0';
+        Storage_RemovePendingUid(txn_uid);
+        GUI_Attendance_UpdatePendingCount(Storage_GetPendingCount());
+      } else if (strncmp(uart1_rx_buf, "BULK_ACK:", 9) == 0) {
+        /* Bulk transfer response: BULK_ACK:<accepted>|<rejected> */
+        int acc = 0, rej = 0;
+        if (sscanf(uart1_rx_buf + 9, "%d|%d", &acc, &rej) >= 1) {
+          if (acc > 0) {
+            Storage_RemovePendingBatch((uint32_t)acc);
+          }
+          uint32_t rem_pending = Storage_GetPendingCount();
+          GUI_Attendance_UpdatePendingCount(rem_pending);
+
+          /* Jika masih ada antrean yang tersisa dan batch ini berhasil,
+           * lanjutkan kirim batch berikutnya sampai habis! */
+          if (rem_pending > 0 && acc > 0 && rej == 0 && g_wifi_connected) {
+            g_bulk_sync_requested = true;
+          } else {
+            ui_event_t ui_evt = {0};
+            ui_evt.type = UI_EVENT_BULK_SYNC_DONE;
+            ui_evt.status = (rej == 0 && (acc > 0 || rem_pending == 0))
+                                ? 1
+                                : ((acc > 0) ? 2 : 0);
+            if (rem_pending == 0 && acc > 0) {
+              snprintf(ui_evt.extra, sizeof(ui_evt.extra),
+                       "Semua antrean (%d data) sukses tersinkron!", acc);
+            } else if (acc > 0 && rej == 0) {
+              snprintf(ui_evt.extra, sizeof(ui_evt.extra),
+                       "Sukses: %d data terekam di server!", acc);
+            } else if (acc > 0 && rej > 0) {
+              snprintf(ui_evt.extra, sizeof(ui_evt.extra),
+                       "Sebagian: %d sukses, %d ditolak", acc, rej);
+            } else if (rej > 0) {
+              snprintf(ui_evt.extra, sizeof(ui_evt.extra),
+                       "Gagal: %d data ditolak server!", rej);
+            } else {
+              snprintf(ui_evt.extra, sizeof(ui_evt.extra),
+                       "Gagal terhubung ke backend!");
+            }
+            osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+          }
+        }
+      } else if (strncmp(uart1_rx_buf, "BULK_ERR:", 9) == 0) {
+        char *msg = uart1_rx_buf + 9;
+        size_t l = strlen(msg);
+        while (l > 0 && (msg[l - 1] == '\r' || msg[l - 1] == '\n'))
+          msg[--l] = '\0';
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_BULK_SYNC_DONE;
+        ui_evt.status = 0;
+        snprintf(ui_evt.extra, sizeof(ui_evt.extra), "Gagal: %.40s", msg);
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+      } else if (strncmp(uart1_rx_buf, "REG_OK:", 7) == 0) {
+        /* Balasan pendaftaran device berhasil dari server via ESP32 */
+        char *msg = uart1_rx_buf + 7;
+        size_t l = strlen(msg);
+        while (l > 0 && (msg[l - 1] == '\r' || msg[l - 1] == '\n'))
+          msg[--l] = '\0';
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_DEVICE_REG_RESULT;
+        ui_evt.status = 1;
+        strncpy(ui_evt.extra, msg, sizeof(ui_evt.extra) - 1);
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+      } else if (strncmp(uart1_rx_buf, "REG_ERR:", 8) == 0) {
+        /* Balasan pendaftaran device gagal dari server via ESP32 */
+        char *msg = uart1_rx_buf + 8;
+        size_t l = strlen(msg);
+        while (l > 0 && (msg[l - 1] == '\r' || msg[l - 1] == '\n'))
+          msg[--l] = '\0';
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_DEVICE_REG_RESULT;
+        ui_evt.status = 0;
+        strncpy(ui_evt.extra, msg, sizeof(ui_evt.extra) - 1);
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+      } else if (strncmp(uart1_rx_buf, "GRANTED:", 8) == 0) {
         /* Format: GRANTED:<UID>|<NAMA>|<DEPARTEMEN> */
         char *data = uart1_rx_buf + 8;
-        char *uid_str = strtok(data, "|");
-        (void)uid_str; /* Suppress unused variable warning */
-        char *name_str = strtok(NULL, "|");
+        char *nl = strpbrk(data, "\r\n");
+        if (nl)
+          *nl = '\0';
 
-        ui_event_t ui_evt = {0};
-        ui_evt.type = UI_EVENT_ATTENDANCE_SUCCESS;
-        ui_evt.status = 1;
-        if (name_str != NULL) {
+        char *uid_card = strtok(data, "|");
+        char *name_str = strtok(NULL, "|");
+        char *pos_str = strtok(NULL, "|");
+
+        /* 1. Bunyikan 2x beep pendek tanda verifikasi server sukses */
+        HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                          GPIO_PIN_SET);
+        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+        osDelay(50);
+        HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
+        osDelay(50);
+        HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                          GPIO_PIN_SET);
+        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+        osDelay(50);
+        HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
+
+        /* 2. Cek apakah respon server mengembalikan nama karyawan yang sah */
+        bool is_valid_name = (name_str != NULL && strlen(name_str) > 0 &&
+                              strcmp(name_str, "-") != 0 &&
+                              strcasecmp(name_str, "Akses Diterima") != 0 &&
+                              strcasecmp(name_str, "Akses Diterima!") != 0 &&
+                              strcasecmp(name_str, "UNKNOWN") != 0);
+
+        if (is_valid_name) {
+          /* Akses Sah: Tampilkan nama karyawan di layar */
+          ui_event_t ui_evt = {0};
+          ui_evt.type = UI_EVENT_ATTENDANCE_SUCCESS;
+          ui_evt.status = 1;
           strncpy(ui_evt.extra, name_str, sizeof(ui_evt.extra) - 1);
+          osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+
+          /* 3. LAZY CACHING: Simpan pasangan UID + Nama ke memori lokal USERS.CSV */
+          if (uid_card && strlen(uid_card) > 0) {
+            while (*uid_card == ' ')
+              uid_card++;
+            while (*name_str == ' ')
+              name_str++;
+            if (pos_str) {
+              while (*pos_str == ' ')
+                pos_str++;
+            }
+            Storage_SaveEmployee(uid_card, name_str, pos_str);
+          }
         } else {
-          strncpy(ui_evt.extra, "Akses Diterima", sizeof(ui_evt.extra) - 1);
+          /* Kartu belum terdaftar / belum di-mapping di server */
+          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+          osDelay(250);
+          HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+
+          ui_event_t ui_evt = {0};
+          ui_evt.type = UI_EVENT_ATTENDANCE_REJECTED;
+          ui_evt.status = 0;
+          strncpy(ui_evt.extra, "Belum Terdaftar", sizeof(ui_evt.extra) - 1);
+          osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
         }
-        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-      } else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0) {
-        /* Format: DENIED:<ALASAN> */
+
+        /* 4. Tulis riwayat audit ke ATTEND.CSV */
+        RTC_TimeTypeDef sTime = {0};
+        RTC_DateTypeDef sDate = {0};
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+        char time_iso[32];
+        snprintf(time_iso, sizeof(time_iso), "20%02d-%02d-%02d %02d:%02d:%02d",
+                 sDate.Year, sDate.Month, sDate.Date, sTime.Hours,
+                 sTime.Minutes, sTime.Seconds);
+
+        if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
+          if (g_sd_mounted) {
+            FIL attend_file;
+            if (f_open(&attend_file, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) ==
+                FR_OK) {
+              f_lseek(&attend_file, f_size(&attend_file));
+              UINT bw;
+              char log_line[128];
+              snprintf(log_line, sizeof(log_line), "%s,UID:%s,NAME=%.40s\r\n",
+                       time_iso, uid_card ? uid_card : "-",
+                       name_str ? name_str : "UNKNOWN");
+              f_write(&attend_file, log_line, strlen(log_line), &bw);
+              f_sync(&attend_file);
+              f_close(&attend_file);
+            }
+          }
+          osMutexRelease(sdioFatFsMutexHandle);
+        }
+
+      } else if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0 ||
+                 strncmp(uart1_rx_buf, "TXN_ERR:", 8) == 0) {
+        /* Format: DENIED:<REASON> atau TXN_ERR:<TXN_UID>|<REASON> */
+        char *data = NULL;
+        if (strncmp(uart1_rx_buf, "DENIED:", 7) == 0) {
+          data = uart1_rx_buf + 7;
+        } else {
+          char *p = uart1_rx_buf + 8;
+          char *bar = strchr(p, '|');
+          data = bar ? bar + 1 : p;
+        }
+        char *nl = strpbrk(data, "\r\n");
+        if (nl)
+          *nl = '\0';
+
+        /* 1. Bunyikan 1x beep panjang tanda kartu ditolak */
+        HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                          GPIO_PIN_SET);
+        osDelay(250);
+        HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                          GPIO_PIN_RESET);
+
+        /* 2. Tampilkan pesan penolakan dari API di layar */
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_ATTENDANCE_REJECTED;
         ui_evt.status = 0;
-        strncpy(ui_evt.extra, uart1_rx_buf + 7, sizeof(ui_evt.extra) - 1);
+        if (data != NULL && strlen(data) > 0) {
+          strncpy(ui_evt.extra, data, sizeof(ui_evt.extra) - 1);
+        } else {
+          strncpy(ui_evt.extra, "Kartu Tidak Terdaftar",
+                  sizeof(ui_evt.extra) - 1);
+        }
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
       } else if (strncmp(uart1_rx_buf, "TIME:", 5) == 0) {
         /* Sinkronisasi Waktu NTP dari ESP32 */
         int h = 0, m = 0, s = 0, d = 0, mo = 0, y = 0;
         bool parsed = false;
 
-        /* Format 1: YYYY-MM-DD HH:MM:SS */
         if (sscanf(uart1_rx_buf + 5, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &m,
                    &s) == 6) {
           parsed = true;
-        }
-        /* Format 2: ISO8601 YYYY-MM-DDTHH:MM:SS */
-        else if (sscanf(uart1_rx_buf + 5, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h,
-                        &m, &s) == 6) {
+        } else if (sscanf(uart1_rx_buf + 5, "%d-%d-%dT%d:%d:%d", &y, &mo, &d,
+                          &h, &m, &s) == 6) {
           parsed = true;
-        }
-        /* Format 3: HH:MM:SS-DD/MM/YYYY */
-        else if (sscanf(uart1_rx_buf + 5, "%d:%d:%d-%d/%d/%d", &h, &m, &s, &d,
-                        &mo, &y) == 6) {
+        } else if (sscanf(uart1_rx_buf + 5, "%d:%d:%d-%d/%d/%d", &h, &m, &s, &d,
+                          &mo, &y) == 6) {
           parsed = true;
         }
 
@@ -1511,7 +2604,6 @@ void StartEsp32Task(void *argument) {
           sDate.Year = (uint8_t)(y >= 2000 ? y - 2000 : y);
           HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
-          /* Tandai di RTC Backup Register bahwa RTC valid & disinkronkan */
           __HAL_RCC_PWR_CLK_ENABLE();
           HAL_PWR_EnableBkUpAccess();
           HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F2);
@@ -1535,29 +2627,53 @@ void StartEsp32Task(void *argument) {
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
       } else if (strncmp(uart1_rx_buf, "WIFI:OK", 7) == 0) {
         g_wifi_connected = true;
+        strncpy(g_wifi_info.status, "CONNECTED", sizeof(g_wifi_info.status) - 1);
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 1;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
 
-        /* Otomatis minta sinkronisasi jam NTP saat pertama kali tersambung
-         * Wi-Fi */
         esp_tx_item_t sync_cmd = {0};
         snprintf(sync_cmd.payload, sizeof(sync_cmd.payload), "CMD:SYNC_TIME\n");
         osMessageQueuePut(espTxQueueHandle, &sync_cmd, 0, 10);
       } else if (strncmp(uart1_rx_buf, "WIFI:FAIL", 9) == 0) {
         g_wifi_connected = false;
+        strncpy(g_wifi_info.status, "DISCONNECTED", sizeof(g_wifi_info.status) - 1);
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 0;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
       } else if (strncmp(uart1_rx_buf, "WIFI_SAVED", 10) == 0) {
-        /* ESP32 berhasil menyimpan Wi-Fi baru ke NVS dan sedang restart */
         g_wifi_connected = false;
+        strncpy(g_wifi_info.status, "CONNECTING", sizeof(g_wifi_info.status) - 1);
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 0;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+      } else if (strncmp(uart1_rx_buf, "WIFI_INFO:", 10) == 0) {
+        /* Format: WIFI_INFO:<STATUS>|<SSID>|<IP>|<RSSI>|<PROTO>|<MAC> */
+        char *data = uart1_rx_buf + 10;
+        char *nl = strpbrk(data, "\r\n");
+        if (nl) *nl = '\0';
+
+        char *st    = strtok(data, "|");
+        char *ssid  = strtok(NULL, "|");
+        char *ip    = strtok(NULL, "|");
+        char *rssi  = strtok(NULL, "|");
+        char *proto = strtok(NULL, "|");
+        char *mac   = strtok(NULL, "|");
+
+        if (st) strncpy(g_wifi_info.status, st, sizeof(g_wifi_info.status) - 1);
+        if (ssid) strncpy(g_wifi_info.ssid, ssid, sizeof(g_wifi_info.ssid) - 1);
+        if (ip) strncpy(g_wifi_info.ip, ip, sizeof(g_wifi_info.ip) - 1);
+        if (rssi) strncpy(g_wifi_info.rssi, rssi, sizeof(g_wifi_info.rssi) - 1);
+        if (proto) {
+          strncpy(g_wifi_info.protocol, proto, sizeof(g_wifi_info.protocol) - 1);
+          g_wifi_info.is_wifi6 = (strstr(proto, "Wi-Fi 6") != NULL || strstr(proto, "11ax") != NULL);
+        }
+        if (mac) strncpy(g_wifi_info.mac, mac, sizeof(g_wifi_info.mac) - 1);
+
+        GUI_Attendance_UpdateWifiInfo(&g_wifi_info);
       }
     }
 
@@ -1575,63 +2691,135 @@ void StartEsp32Task(void *argument) {
 /* USER CODE END Header_StartStorageTask */
 void StartStorageTask(void *argument) {
   /* USER CODE BEGIN StartStorageTask */
-  /* Coba mount MicroSD saat startup agar status badge langsung OK jika kartu
-   * terpasang */
   if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
-    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 0) == FR_OK) {
       g_sd_mounted = true;
     }
     osMutexRelease(sdioFatFsMutexHandle);
   }
 
-  /* Tunggu data masuk dari sdLogQueue (timeout 500ms agar watchdog tetap ter-feed) */
+  /* Sanitasi USERS.CSV untuk membersihkan entri invalid lama sebelum dimuat ke RAM */
+  Storage_SanitizeUsersFile();
+
+  /* Hangatkan RAM cache dari file USERS.CSV agar lookup kartu instan sejak
+   * detik pertama boot */
+  Storage_WarmupCache();
+
+  uint32_t last_periodic_tick = HAL_GetTick();
+
   for (;;) {
     Watchdog_CheckIn(WDT_TASK_STORAGE);
     sd_log_item_t sd_item;
-    if (osMessageQueueGet(sdLogQueueHandle, &sd_item, NULL, 500) ==
-        osOK) {
-      /* Kunci sdioFatFsMutex untuk melindungi akses file system MicroSD */
-      if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK) {
-        if (!g_sd_mounted) {
-          if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK) {
-            g_sd_mounted = true;
-          }
-        }
+    if (osMessageQueueGet(sdLogQueueHandle, &sd_item, NULL, 500) == osOK) {
+      char uid_hex[24] = {0};
+      int off = 0;
+      for (uint8_t i = 0;
+           i < sd_item.uid_len && i < 10 && off < (int)sizeof(uid_hex) - 3;
+           i++) {
+        off += snprintf(uid_hex + off, sizeof(uid_hex) - off, "%02X",
+                        sd_item.uid[i]);
+      }
+      if (off == 0)
+        snprintf(uid_hex, sizeof(uid_hex), "UNKNOWN");
 
+      char time_iso[32];
+      snprintf(time_iso, sizeof(time_iso), "20%02d-%02d-%02d %02d:%02d:%02d",
+               sd_item.year, sd_item.month, sd_item.date, sd_item.hours,
+               sd_item.minutes, sd_item.seconds);
+
+      char txn_uid[96];
+      char dev_code_buf[32];
+      if (g_app_settings.device_code[0] != '\0') {
+        strncpy(dev_code_buf, g_app_settings.device_code,
+                sizeof(dev_code_buf) - 1);
+        dev_code_buf[sizeof(dev_code_buf) - 1] = '\0';
+      } else {
+        uint16_t dev_id =
+            (uint16_t)((HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2()) &
+                       0xFFFF);
+        snprintf(dev_code_buf, sizeof(dev_code_buf), "GATE-%04X",
+                 (unsigned int)dev_id);
+      }
+      snprintf(txn_uid, sizeof(txn_uid), "%.24s_%02d%02d%02d%02d%02d%02d_%.24s",
+               dev_code_buf, sd_item.year, sd_item.month, sd_item.date,
+               sd_item.hours, sd_item.minutes, sd_item.seconds, uid_hex);
+
+      /* 1. Tulis ke ATTEND.CSV (Riwayat Audit Permanen) */
+      if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
         if (g_sd_mounted) {
-          /* Buka file log di MicroSD via FatFS (f_open, f_write, f_sync) */
-          if (f_open(&SDFile, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) ==
-              FR_OK) {
-            f_lseek(&SDFile, f_size(&SDFile));
+          FIL file;
+          if (f_open(&file, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) == FR_OK) {
+            f_lseek(&file, f_size(&file));
             UINT bw;
-            char log_line[96];
-            snprintf(log_line, sizeof(log_line),
-                     "20%02d-%02d-%02d "
-                     "%02d:%02d:%02d,UID:%02X%02X%02X%02X,LOG=%s\r\n",
-                     sd_item.year, sd_item.month, sd_item.date, sd_item.hours,
-                     sd_item.minutes, sd_item.seconds, sd_item.uid[0],
-                     sd_item.uid[1], sd_item.uid[2], sd_item.uid[3],
-                     sd_item.log_msg);
-            f_write(&SDFile, log_line, strlen(log_line), &bw);
-            f_sync(&SDFile);
-            f_close(&SDFile);
-          } else {
-            /* Jika gagal membuka file, asumsikan SD dicabut atau error */
-            g_sd_mounted = false;
+            char log_line[128];
+            snprintf(log_line, sizeof(log_line), "%s,UID:%s,NAME=%.40s\r\n",
+                     time_iso, uid_hex, sd_item.log_msg);
+            f_write(&file, log_line, strlen(log_line), &bw);
+            f_sync(&file);
+            f_close(&file);
+          }
+
+          /* 2. Tulis ke PENDING.CSV (Antrean untuk sinkronisasi ke server) */
+          if (f_open(&file, "PENDING.CSV", FA_OPEN_ALWAYS | FA_WRITE) ==
+              FR_OK) {
+            f_lseek(&file, f_size(&file));
+            UINT bw;
+            char pend_line[160];
+            snprintf(pend_line, sizeof(pend_line),
+                     "%.64s|%.20s|%.24s|rfid|tap\r\n", txn_uid, time_iso,
+                     uid_hex);
+            f_write(&file, pend_line, strlen(pend_line), &bw);
+            f_sync(&file);
+            f_close(&file);
           }
         }
         osMutexRelease(sdioFatFsMutexHandle);
       }
 
-      /* Meneruskan payload absensi menuju espTxQueue untuk dikirim via Wi-Fi
-       * oleh Task_ESP32 */
-      esp_tx_item_t esp_item = {0};
-      snprintf(esp_item.payload, sizeof(esp_item.payload),
-               "ATTEND:20%02d-%02d-%02d %02d:%02d:%02d|UID=%02X%02X%02X%02X\n",
-               sd_item.year, sd_item.month, sd_item.date, sd_item.hours,
-               sd_item.minutes, sd_item.seconds, sd_item.uid[0], sd_item.uid[1],
-               sd_item.uid[2], sd_item.uid[3]);
-      osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 50);
+      /* Perbarui jumlah antrean di tab sinkronisasi GUI */
+      GUI_Attendance_UpdatePendingCount(Storage_GetPendingCount());
+
+      /* 3. Jika mode Realtime dan Wi-Fi terhubung, kirim segera ke ESP32 */
+      if (g_app_settings.sync_mode == SYNC_MODE_REALTIME && g_wifi_connected) {
+        esp_tx_item_t esp_item = {0};
+        snprintf(esp_item.payload, sizeof(esp_item.payload),
+                 "TXN:%.64s|%.20s|%.24s|rfid|tap\n", txn_uid, time_iso,
+                 uid_hex);
+        osMessageQueuePut(espTxQueueHandle, &esp_item, 0, 50);
+      }
+    }
+
+    /* 4. Pemeriksaan permintaan sinkronisasi bulk (dari GUI atau timer
+     * periodik) */
+    uint32_t now = HAL_GetTick();
+    uint32_t interval_ms = 0;
+    switch (g_app_settings.sync_mode) {
+    case SYNC_MODE_10_MIN:
+      interval_ms = 10 * 60 * 1000;
+      break;
+    case SYNC_MODE_30_MIN:
+      interval_ms = 30 * 60 * 1000;
+      break;
+    case SYNC_MODE_1_HOUR:
+      interval_ms = 60 * 60 * 1000;
+      break;
+    case SYNC_MODE_1_DAY:
+      interval_ms = 24 * 60 * 60 * 1000;
+      break;
+    default:
+      interval_ms = 0;
+      break; /* Realtime */
+    }
+
+    bool periodic_due =
+        (interval_ms > 0 && (now - last_periodic_tick >= interval_ms));
+    if (g_bulk_sync_requested || periodic_due) {
+      if (periodic_due)
+        last_periodic_tick = now;
+      g_bulk_sync_requested = false;
+      if (g_wifi_connected) {
+        Storage_TriggerBulkSync();
+      }
     }
   }
   /* USER CODE END StartStorageTask */

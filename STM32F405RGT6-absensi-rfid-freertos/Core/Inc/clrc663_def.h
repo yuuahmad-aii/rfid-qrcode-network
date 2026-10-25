@@ -76,11 +76,22 @@ extern "C" {
 #define CLRC663_REG_RXTHRESHOLD         0x37    /*!< Receiver threshold */
 #define CLRC663_REG_RCV                 0x38    /*!< Receiver */
 #define CLRC663_REG_RXANA               0x39    /*!< Receiver analog */
+#define CLRC663_REG_LPCD_OPTIONS        0x3A    /*!< LPCD options register (CLRC66303 only) */
 #define CLRC663_REG_SERIALSPEED         0x3B    /*!< Serial speed register */
 #define CLRC663_REG_LFO_TRIMM           0x3C    /*!< Low-frequency oscillator trim */
 #define CLRC663_REG_PLL_CTRL            0x3D    /*!< PLL control */
 #define CLRC663_REG_PLL_DIVOUT          0x3E    /*!< PLL divider */
 #define CLRC663_REG_LPCD_QMIN           0x3F    /*!< LPCD Q channel min */
+
+/* LPCD Options register (0x3A) bits */
+#define CLRC663_LPCD_OPTIONS_TX_HIGH    (1 << 3) /*!< Set TX driver output = VTVDD during LPCD */
+#define CLRC663_LPCD_OPTIONS_FILTER     (1 << 2) /*!< Enable LPCD digital noise filter */
+
+/* LPCD Result Q register (0x43) bits */
+#define CLRC663_LPCD_RESULT_Q_IRQ_CLR   (1 << 6) /*!< Clear LPCD IRQ and reset detector */
+
+/* Receiver register (0x38) bits */
+#define CLRC663_RCV_RX_ADCMODE          (1 << 6) /*!< Connect mixers directly to ADC for LPCD */
 #define CLRC663_REG_LPCD_QMAX           0x40    /*!< LPCD Q channel max */
 #define CLRC663_REG_LPCD_IMIN           0x41    /*!< LPCD I channel min */
 #define CLRC663_REG_LPCD_I_RESULT       0x42    /*!< LPCD I channel result */

@@ -1,0 +1,242 @@
+=== PAGE 1 ===
+Help penggunaan
+Panduan singkat yang mudah diikuti untuk admin dan teknisi device.
+IoT Device Console
+device.dsalute.id
+Dashboard
+Devices
+Transaction Log
+Karyawan
+Admin
+Help
+Administrator
+super_admin · @admin
+Keluar
+M A N A G E M E N T C O N S O L E
+Download Postman Collection
+Kalau ingin mencoba API tanpa menulis request manual, gunakan file Postman ini.
+Download Postman Collection
+Setelah diimport ke Postman, ubah variable
+`baseUrl` dan
+`
+apiKey
+`
+sesuai kebutuhan.
+TO O L S
+Alur paling mudah
+1. Daftarkan device
+Kirim data
+`device_code
+` dan
+`device_name
+` ke endpoint registrasi. Server akan mengembalikan api_key.
+2. Simpan API key di device
+API key ini dipakai device saat meminta waktu server dan saat kirim transaksi absensi.
+3. Admin aktifkan device
+M U L A I D A R I S I N I
+=== PAGE 2 ===
+Buka menu
+Devices
+, cari device yang baru masuk, lalu klik
+Enable
+.
+4. Device mulai dipakai
+Setelah aktif, device bisa sinkron waktu dan kirim transaksi absensi ke server.
+Registrasi device
+Gunanya: membuat device baru di server dan mendapatkan API key.
+Yang dikirim:
+`device_code
+`
+,
+`device_name
+`
+, opsional `location
+`
+,
+`firmware_version
+`
+Yang diterima:
+`device_id`
+,
+`
+api_key
+`
+, status
+`
+pending_activation
+`
+Yang harus disimpan:
+`
+api_key
+` di device
+Kirim request ini sekali saja saat device pertama kali dipasang:
+POST https://device.dsalute.id/api/v1/register.php
+Content-Type: application/json
+{
+ "device_code": "GATE-001",
+ "device_name": "Gate Utama",
+ "location": "Lobby",
+ "firmware_version": "1.0.0"
+}
+Test cepat
+Linux / macOS
+curl -X POST "https://device.dsalute.id/api/v1/register.php" -H "Content-Type: application/json" -d
+'{"device_code":"GATE-001","device_name":"Gate Utama"}'
+Windows CMD
+curl -X POST "https://device.dsalute.id/api/v1/register.php" -H "Content-Type: application/json" -d "
+{\"device_code\":\"GATE-001\",\"device_name\":\"Gate Utama\"}"
+PowerShell
+curl -Method POST "https://device.dsalute.id/api/v1/register.php" -Headers @{ "Content￾Type"="application/json" } -Body '{"device_code":"GATE-001","device_name":"Gate Utama"}'
+Contoh response
+{
+ "success": true,
+ "device_id": 12,
+L A N G K A H 1
+=== PAGE 3 ===
+ "device_code": "GATE-001",
+ "pending_activation": true,
+ "api_key": "dev_xxxxx"
+}
+Yang perlu disimpan oleh device: api_key.
+Setelah itu admin harus mengaktifkan device dari menu Devices.
+Sinkron waktu device
+Gunanya: supaya jam absensi di device sesuai dengan waktu server.
+Yang dikirim: header
+`X-API-Key
+`
+Yang diterima:
+`
+server_time
+`
+,
+`
+unix_time
+`
+,
+`timezone
+`
+Yang harus disimpan: tidak wajib, cukup dipakai untuk set waktu device
+GET https://device.dsalute.id/api/v1/time.php
+X-API-Key: dev_xxxxx
+Test cepat
+Linux / macOS
+curl "https://device.dsalute.id/api/v1/time.php" -H "X-API-Key: dev_xxxxx"
+Windows CMD
+curl "https://device.dsalute.id/api/v1/time.php" -H "X-API-Key: dev_xxxxx"
+PowerShell
+curl -Method GET "https://device.dsalute.id/api/v1/time.php" -Headers @{ "X-API-Key"="dev_xxxxx" }
+Contoh response
+{
+ "success": true,
+ "device_code": "GATE-001",
+ "server_time": "2026-07-18T21:31:20+07:00",
+ "unix_time": 1784385080,
+ "timezone": "Asia/Jakarta"
+}
+Pakai endpoint ini saat:
+saat device baru menyala,
+setelah internet reconnect,
+sebelum kirim transaksi jika perlu sinkron ulang.
+L A N G K A H 2
+Kirim transaksi absensi
+L A N G K A H 3
+=== PAGE 4 ===
+Yang dikirim:
+`transaction_uid`
+,
+`timestamp
+`
+,
+`identifier
+`
+,
+`identifier_type
+`
+,
+`time_source
+`
+Yang diterima: hasil absensi sukses atau pesan penolakan jika karyawan belum terdaftar
+Yang harus disimpan: tidak wajib; hapus antrean lokal hanya jika
+`delete_local=true
+`
+Request yang dikirim device
+POST https://device.dsalute.id/api/v1/transactions.php
+X-API-Key: dev_xxxxx
+Content-Type: application/json
+{
+ "transaction_uid": "GATE-001-20260718-000001",
+ "timestamp": "2026-07-18T20:15:31+07:00",
+ "identifier": "04A12BC93F",
+ "identifier_type": "rfid",
+ "time_source": "ntp"
+}
+Test cepat
+Linux / macOS
+curl -X POST "https://device.dsalute.id/api/v1/transactions.php" -H "X-API-Key: dev_xxxxx" -H "Content￾Type: application/json" -d '{"transaction_uid":"GATE-001-20260718-000001","timestamp":"2026-07-
+18T20:15:31+07:00","identifier":"04A12BC93F","identifier_type":"rfid","time_source":"ntp"}'
+Windows CMD
+curl -X POST "https://device.dsalute.id/api/v1/transactions.php" -H "X-API-Key: dev_xxxxx" -H "Content￾Type: application/json" -d "{\"transaction_uid\":\"GATE-001-20260718-000001\",\"timestamp\":\"2026-07-
+18T20:15:31+07:00\",\"identifier\":\"04A12BC93F\",\"identifier_type\":\"rfid\",\"time_source\":\"ntp\"}"
+PowerShell
+curl -Method POST "https://device.dsalute.id/api/v1/transactions.php" -Headers @{ "X-API￾Key"="dev_xxxxx"; "Content-Type"="application/json" } -Body '{"transaction_uid":"GATE-001-20260718-
+000001","timestamp":"2026-07-
+18T20:15:31+07:00","identifier":"04A12BC93F","identifier_type":"rfid","time_source":"ntp"}'
+Yang paling mudah dibaca device
+{
+ "attendance_result": {
+ "id": "EMP-001",
+ "name": "Budi Santoso",
+ "position": "Supervisor",
+ "datetime": "2026-07-18 21:45:10",
+ "screen": {
+ "line1": "Budi Santoso",
+ "line2": "Supervisor",
+ "line3": "2026-07-18 21:45:10"
+ }
+ },
+ "display_message": "EMP-001 | Budi Santoso | Supervisor | 2026-07-18 21:45:10"
+}
+Kalau karyawan belum terdaftar
+{
+ "success": false,
+ "accepted_count": 0,
+ "rejected_count": 1,
+ "rejected": [
+ {
+ "reason": "anda belum terdaftar",
+=== PAGE 5 ===
+ "display_message": "anda belum terdaftar | 2026-07-18 21:45:10",
+ "screen": {
+ "line1": "Anda belum",
+ "line2": "terdaftar",
+ "line3": "2026-07-18 21:45:10"
+ }
+ }
+ ]
+}
+Kalau device punya layar 3 baris
+Tampilkan saja:
+screen.line1
+screen.line2
+screen.line3
+Kalau device hanya butuh satu teks
+Tampilkan saja display_message.
+Aturan penting: hapus data absensi lokal hanya jika item response berada di array accepted dan memiliki delete_local=true. Jika
+item masuk ke rejected dengan pesan anda belum terdaftar, tampilkan pesan itu di layar dan jangan simpan sebagai absensi
+sukses.
+Mapping karyawan
+1. Buka menu Karyawan.
+2. Isi Employee code dan Nama lengkap.
+3. Isi Identifier type dan Identifier value sesuai kartu RFID atau QR.
+4. Setelah itu nama dan jabatan akan ikut muncul di respons absensi device.
+U N T U K A D M I N
+Cek cepat
+Jika device tidak bisa kirim data: cek apakah statusnya sudah Enabled.
+Jika respons
+`401`
+: biasanya API key salah atau device masih nonaktif.
+Jika nama tidak muncul di layar device: cek mapping karyawan di menu Karyawan.
+Jika waktu di layar salah: panggil lagi endpoint /api/v1/time.php.
+Jika API key bocor: buka menu Devices lalu klik Reset key.
+Kalau ingin cek server paling cepat dari terminal: curl "https://device.dsalute.id/api/v1/health.php"
+J I K A A D A M A S A L A H

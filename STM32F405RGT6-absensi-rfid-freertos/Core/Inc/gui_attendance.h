@@ -26,7 +26,9 @@ typedef enum {
     UI_EVENT_WIFI_STATUS,
     UI_EVENT_SD_STATUS,
     UI_EVENT_NTP_SYNCED,
-    UI_EVENT_NTP_FAILED
+    UI_EVENT_NTP_FAILED,
+    UI_EVENT_BULK_SYNC_DONE,
+    UI_EVENT_DEVICE_REG_RESULT
 } ui_event_type_t;
 
 typedef struct {
@@ -34,15 +36,15 @@ typedef struct {
     uint8_t status;           /* Status flag: 0=error/fail, 1=success (1 byte) */
     uint8_t uid_len;          /* Card UID length: 4, 7, or 10 bytes (1 byte) */
     uint8_t uid[10];          /* Card UID buffer (10 bytes) */
-    char    extra[19];        /* Employee name, reason, or status info (19 bytes) */
-} ui_event_t;                 /* Exactly 32 bytes */
+    char    extra[51];        /* Employee name, reason, or status info (51 bytes) */
+} ui_event_t;                 /* Exactly 64 bytes */
 #endif
 
 #ifndef ESP_TX_ITEM_DEFINED
 #define ESP_TX_ITEM_DEFINED
 typedef struct {
-    char payload[64];         /* Formatted string packet to ESP32 (64 bytes) */
-} esp_tx_item_t;              /* Exactly 64 bytes (matches espTxQueue item size) */
+    char payload[128];        /* Formatted string packet to ESP32 (128 bytes) */
+} esp_tx_item_t;              /* Exactly 128 bytes (matches espTxQueue item size) */
 #endif
 
 /**
@@ -123,19 +125,31 @@ uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs);
 #define SETTINGS_FLASH_SECTOR       FLASH_SECTOR_11
 #define SETTINGS_FLASH_ADDR         0x080E0000U
 #define SETTINGS_MAGIC              0xAA55F405U
-#define SETTINGS_VERSION            1
+#define SETTINGS_VERSION            2
+
+#define SYNC_MODE_REALTIME          0
+#define SYNC_MODE_10_MIN            1
+#define SYNC_MODE_30_MIN            2
+#define SYNC_MODE_1_HOUR            3
+#define SYNC_MODE_1_DAY             4
 
 typedef struct {
-    uint32_t magic;              /* 0xAA55F405 */
-    uint16_t version;            /* Version 1 */
-    uint16_t checksum;           /* Checksum */
-    uint8_t  brightness;         /* 10 - 100 (%) */
-    uint8_t  theme_mode;         /* 1 = Dark Mode, 0 = Light Mode */
-    uint16_t screen_timeout_sec; /* 0 (Never), 30, 60, 120, 300 */
-    char     wifi_ssid[34];      /* Wi-Fi SSID string */
-    char     wifi_pass[66];      /* Wi-Fi Password string */
-    char     server_ip[16];      /* Server IP if needed */
-    uint8_t  reserved[134];      /* Padding to 256 bytes for future expansion */
+    uint32_t magic;              /* 0xAA55F405 (4 bytes) */
+    uint16_t version;            /* Version 2 (2 bytes) */
+    uint16_t checksum;           /* Checksum (2 bytes) */
+    uint8_t  brightness;         /* 10 - 100 (%) (1 byte) */
+    uint8_t  theme_mode;         /* 1 = Dark Mode, 0 = Light Mode (1 byte) */
+    uint16_t screen_timeout_sec; /* 0 (Never), 30, 60, 120, 300 (2 bytes) */
+    char     wifi_ssid[34];      /* Wi-Fi SSID string (34 bytes) */
+    char     wifi_pass[66];      /* Wi-Fi Password string (66 bytes) */
+    char     server_ip[16];      /* Server IP if needed (16 bytes) */
+    char     device_code[24];    /* e.g. "GATE-001" (24 bytes) */
+    char     device_name[32];    /* e.g. "Gate Utama" (32 bytes) */
+    char     admin_pin[10];      /* e.g. "1234" (10 bytes) */
+    uint8_t  sync_mode;          /* SYNC_MODE_REALTIME..SYNC_MODE_1_DAY (1 byte) */
+    uint8_t  lpcd_delta;         /* LPCD threshold delta: 1 - 10 (default: 3) (1 byte) */
+    uint16_t lpcd_interval_ms;   /* LPCD sleep interval: 150, 250, 300, 500 ms (default: 300) (2 bytes) */
+    uint8_t  reserved[58];       /* Padding to exactly 256 bytes total */
 } app_settings_t;
 
 extern app_settings_t g_app_settings;
@@ -144,6 +158,47 @@ void App_Settings_Init(void);
 bool App_Settings_Load(app_settings_t *out_settings);
 bool App_Settings_Save(const app_settings_t *in_settings);
 void App_Settings_ResetDefaults(app_settings_t *settings);
+
+/* ========================================================================== */
+/*                       WI-FI 6 & DEVICE DIAGNOSTICS INFO                    */
+/* ========================================================================== */
+typedef struct {
+    char status[16];     /* "CONNECTED" / "DISCONNECTED" */
+    char ssid[34];       /* SSID */
+    char ip[16];         /* IP Address */
+    char rssi[16];       /* RSSI */
+    char protocol[32];   /* "Wi-Fi 6 (802.11ax)" / "Wi-Fi 4 (802.11n)" */
+    char mac[20];        /* MAC Address */
+    bool is_wifi6;       /* true jika Wi-Fi 6 */
+} wifi_info_t;
+
+extern wifi_info_t g_wifi_info;
+
+typedef struct {
+    char uid[20];
+    char name[36];
+    char pos[24];
+} user_entry_t;
+
+uint16_t Storage_GetRegisteredUsers(user_entry_t *out_users, uint16_t max_users);
+void     Storage_SanitizeUsersFile(void);
+void     GUI_Attendance_UpdateWifiInfo(const wifi_info_t *info);
+void     GUI_Attendance_RefreshUsersTable(void);
+void     GUI_Attendance_RefreshInfoTab(void);
+
+/* ========================================================================== */
+/*                       OFFLINE-FIRST & SYNC HELPERS                         */
+/* ========================================================================== */
+extern volatile bool g_bulk_sync_requested;
+void GUI_Attendance_ShowPopup(const char *title, const char *desc, bool is_success);
+void GUI_Attendance_UpdateDeviceHeader(const char *name, const char *code);
+void GUI_Attendance_UpdatePendingCount(uint32_t count);
+void GUI_Attendance_SetBulkStatus(const char *msg, bool is_ok);
+uint32_t Storage_GetPendingCount(void);
+bool Storage_LookupEmployee(const char *uid_str, char *out_name, size_t name_len, char *out_pos, size_t pos_len);
+bool Storage_SaveEmployee(const char *uid_str, const char *emp_name, const char *emp_pos);
+void Storage_WarmupCache(void);
+void Storage_TriggerBulkSync(void);
 
 /* ========================================================================== */
 /*                       HARDWARE DIAGNOSTIC TESTS                            */

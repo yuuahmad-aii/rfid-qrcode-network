@@ -42,6 +42,19 @@ extern SD_HandleTypeDef hsd;
 /* can be used to modify / undefine following code or add code */
 /* USER CODE END BeforeInitSection */
 /**
+  * @brief  De-Initializes the SD card device.
+  * @retval SD status
+  */
+__weak uint8_t BSP_SD_DeInit(void)
+{
+  if (hsd.State != HAL_SD_STATE_RESET)
+  {
+    HAL_SD_DeInit(&hsd);
+  }
+  return MSD_OK;
+}
+
+/**
   * @brief  Initializes the SD card device.
   * @retval SD status
   */
@@ -52,6 +65,11 @@ __weak uint8_t BSP_SD_Init(void)
   if (BSP_SD_IsDetected() != SD_PRESENT)
   {
     return MSD_ERROR;
+  }
+  /* Ensure handle is clean before initializing */
+  if (hsd.State != HAL_SD_STATE_RESET)
+  {
+    HAL_SD_DeInit(&hsd);
   }
   /* HAL SD initialization */
   sd_state = HAL_SD_Init(&hsd);

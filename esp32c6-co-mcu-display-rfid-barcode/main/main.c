@@ -5,7 +5,10 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_mac.h"
+#include "esp_sleep.h"
 #include "esp_wifi.h"
+#include "esp_wifi_he.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
@@ -27,6 +30,7 @@
 #define API_TEST_URL "http://192.168.137.1:3000/api/test"
 #define API_TIME_URL "https://device.dsalute.id/api/v1/time.php"
 #define API_TRANSACTIONS_URL "https://device.dsalute.id/api/v1/transactions.php"
+#define API_REGISTER_URL "https://device.dsalute.id/api/v1/register.php"
 #define API_KEY "dev_8dfa3625a4593e78de6c02e7b03b1daf7f3b13ba9cae2d81"
 
 #define BOOT_BUTTON_GPIO GPIO_NUM_9
@@ -81,6 +85,7 @@ static SemaphoreHandle_t button_sem;
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 static SemaphoreHandle_t sync_time_sem;
+static cJSON *s_bulk_transactions_array = NULL;
 
 static void set_led_color(uint8_t r, uint8_t g, uint8_t b) {
   if (led_strip) {
@@ -106,7 +111,54 @@ static void configure_led(void) {
   set_led_color(16, 0, 0);
 }
 
+static char s_device_code[32] = "GATE-001";
+static char s_device_name[32] = "Gate Utama";
+static char s_api_key[64] = API_KEY;
+static bool s_wifi_connected_prev = false;
 static int s_wifi_retry_count = 0;
+static esp_netif_t *s_sta_netif = NULL;
+
+static void send_wifi_status_info(void) {
+  wifi_ap_record_t ap_info;
+  esp_netif_ip_info_t ip_info;
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+  char proto_str[32] = "Wi-Fi 4 (802.11n)";
+  char ssid_str[34] = "-";
+  char ip_str[16] = "0.0.0.0";
+  int rssi = 0;
+  bool is_connected = false;
+
+  if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+    is_connected = true;
+    strncpy(ssid_str, (char *)ap_info.ssid, sizeof(ssid_str) - 1);
+    rssi = ap_info.rssi;
+    if (ap_info.phy_11ax) {
+      strncpy(proto_str, "Wi-Fi 6 (802.11ax)", sizeof(proto_str) - 1);
+    } else if (ap_info.phy_11n) {
+      strncpy(proto_str, "Wi-Fi 4 (802.11n)", sizeof(proto_str) - 1);
+    } else if (ap_info.phy_11g) {
+      strncpy(proto_str, "802.11g", sizeof(proto_str) - 1);
+    } else if (ap_info.phy_11b) {
+      strncpy(proto_str, "802.11b", sizeof(proto_str) - 1);
+    }
+  }
+
+  if (s_sta_netif && esp_netif_get_ip_info(s_sta_netif, &ip_info) == ESP_OK) {
+    esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
+  }
+
+  char mac_str[18];
+  snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+  char msg[160];
+  snprintf(msg, sizeof(msg), "WIFI_INFO:%s|%s|%s|%d dBm|%s|%s\n",
+           is_connected ? "CONNECTED" : "DISCONNECTED",
+           ssid_str, ip_str, rssi, proto_str, mac_str);
+  uart_send_and_log(msg);
+}
 
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
@@ -117,8 +169,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     set_led_color(16, 0, 0); // Red
     s_wifi_retry_count++;
-    if (s_wifi_retry_count > 3) {
+    if (s_wifi_connected_prev) {
+      s_wifi_connected_prev = false;
       uart_send_and_log("WIFI:FAIL\n");
+      vTaskDelay(pdMS_TO_TICKS(50));
+      send_wifi_status_info();
     }
     ESP_LOGW(TAG, "Wi-Fi disconnected. Retry attempt #%d...", s_wifi_retry_count);
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -129,11 +184,31 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     s_wifi_retry_count = 0;
     set_led_color(0, 0, 8); // Dim Blue (Connected, idle)
 
-    /* Aktifkan Wi-Fi Modem-Sleep HANYA setelah IP berhasil diperoleh dan koneksi stabil */
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    /* 1. Aktifkan Maximum Modem-Sleep (DTIM Sleep) untuk menghemat baterai secara drastis */
+    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+
+    /* 2. Negosiasikan Wi-Fi 6 (802.11ax) Individual Target Wake Time (iTWT) jika router mendukung */
+    wifi_itwt_setup_config_t itwt_cfg = {
+        .setup_cmd = TWT_REQUEST,
+        .trigger = 1,
+        .flow_type = 0,         /* Announced individual TWT */
+        .wake_invl_expn = 10,   /* Target wake interval ~1024 ms */
+        .wake_invl_mant = 1000,
+        .min_wake_dura = 255,   /* Nominal minimum wake duration */
+        .timeout_time_ms = 5000,
+    };
+    esp_err_t twt_err = esp_wifi_sta_itwt_setup(&itwt_cfg);
+    if (twt_err == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi 6 (802.11ax) Individual TWT negotiation initiated!");
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi 6 TWT not applicable (%s). Standard DTIM Max Modem-Sleep active.", esp_err_to_name(twt_err));
+    }
 
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    s_wifi_connected_prev = true;
     uart_send_and_log("WIFI:OK\n");
+    vTaskDelay(pdMS_TO_TICKS(50));
+    send_wifi_status_info();
   }
 }
 
@@ -142,7 +217,7 @@ void wifi_init_sta(void) {
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+  s_sta_netif = esp_netif_create_default_wifi_sta();
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -166,7 +241,26 @@ void wifi_init_sta(void) {
       nvs_get_str(my_handle, "pass", pass, &len);
       len = sizeof(ip);
       nvs_get_str(my_handle, "ip", ip, &len);
+      len = sizeof(s_device_code);
+      nvs_get_str(my_handle, "dev_code", s_device_code, &len);
+      len = sizeof(s_device_name);
+      nvs_get_str(my_handle, "dev_name", s_device_name, &len);
+      len = sizeof(s_api_key);
+      if (nvs_get_str(my_handle, "api_key", s_api_key, &len) == ESP_OK && strlen(s_api_key) > 0) {
+          ESP_LOGI(TAG, "Loaded API Key from NVS: %s", s_api_key);
+      }
       nvs_close(my_handle);
+  }
+
+  /* Jika dev_code masih default GATE-001 atau kosong, gunakan default unik berdasarkan MAC address Wi-Fi */
+  if (strlen(s_device_code) == 0 || strcmp(s_device_code, "GATE-001") == 0) {
+      uint8_t mac[6] = {0};
+      if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+          snprintf(s_device_code, sizeof(s_device_code), "GATE-%02X%02X", mac[4], mac[5]);
+          if (strlen(s_device_name) == 0 || strcmp(s_device_name, "Gate Utama") == 0) {
+              snprintf(s_device_name, sizeof(s_device_name), "Gate %02X%02X", mac[4], mac[5]);
+          }
+      }
   }
 
   /* Hanya terapkan Static IP jika IP valid dan bukan DHCP / 0.0.0.0 */
@@ -174,7 +268,7 @@ void wifi_init_sta(void) {
       esp_netif_ip_info_t ip_info;
       memset(&ip_info, 0, sizeof(ip_info));
       if (ip4addr_aton(ip, (ip4_addr_t *)&ip_info.ip) && ip_info.ip.addr != 0) {
-          esp_netif_dhcpc_stop(sta_netif);
+          esp_netif_dhcpc_stop(s_sta_netif);
           char gw_str[16];
           strncpy(gw_str, ip, sizeof(gw_str));
           char *last_dot = strrchr(gw_str, '.');
@@ -183,17 +277,18 @@ void wifi_init_sta(void) {
           }
           ip4addr_aton(gw_str, (ip4_addr_t *)&ip_info.gw);
           ip4addr_aton("255.255.255.0", (ip4_addr_t *)&ip_info.netmask);
-          esp_netif_set_ip_info(sta_netif, &ip_info);
+          esp_netif_set_ip_info(s_sta_netif, &ip_info);
           ESP_LOGI(TAG, "Static IP configured: %s, GW: %s", ip, gw_str);
       }
   } else {
-      esp_netif_dhcpc_start(sta_netif);
+      esp_netif_dhcpc_start(s_sta_netif);
       ESP_LOGI(TAG, "Using automatic DHCP for IP assignment");
   }
 
   wifi_config_t wifi_config = {
       .sta = {
               .threshold.authmode = (strlen(pass) == 0) ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK,
+              .listen_interval = 3, /* Dengarkan DTIM beacon router setiap 3 interval untuk menghemat daya */
               .pmf_cfg = {
                   .capable = true,
                   .required = false,
@@ -263,7 +358,8 @@ static void send_api_request(const char *identifier, const char *type) {
   strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S+07:00", &timeinfo);
   
   char uid[64];
-  snprintf(uid, sizeof(uid), "DEV-001-%04d%02d%02d-%02d%02d%02d", 
+  snprintf(uid, sizeof(uid), "%s-%04d%02d%02d-%02d%02d%02d", 
+           s_device_code,
            timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
            timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 
@@ -323,28 +419,47 @@ static void send_api_request(const char *identifier, const char *type) {
            const char *name_str = (name_json && cJSON_IsString(name_json)) ? name_json->valuestring : "-";
            const char *pos_str = (pos_json && cJSON_IsString(pos_json)) ? pos_json->valuestring : "-";
 
-           char msg[128];
-           snprintf(msg, sizeof(msg), "GRANTED:%s|%s|%s\n", id_str, name_str, pos_str);
-           uart_send_and_log(msg);
+           /* VALIDASI KETAT: Hanya kirim GRANTED jika kartu memiliki data Karyawan sah */
+           if (strcmp(name_str, "-") != 0 && strlen(name_str) > 0 &&
+               strcasecmp(name_str, "Akses Diterima") != 0 &&
+               strcasecmp(name_str, "UNKNOWN") != 0) {
+             set_led_color(0, 20, 0); // Dim Green (Success)
+             char msg[128];
+             snprintf(msg, sizeof(msg), "GRANTED:%s|%s|%s\n",
+                      (identifier && strlen(identifier) > 0) ? identifier : id_str,
+                      name_str, pos_str);
+             uart_send_and_log(msg);
+           } else {
+             /* Kartu tercatat di server tapi belum di-mapping ke Karyawan */
+             set_led_color(20, 0, 0); // Dim Red (Failed)
+             uart_send_and_log("DENIED:Belum Terdaftar\n");
+           }
         } else {
-           uart_send_and_log("GRANTED:-|-|-\n");
+           /* Kartu tidak memiliki objek data karyawan */
+           set_led_color(20, 0, 0); // Dim Red (Failed)
+           uart_send_and_log("DENIED:Belum Terdaftar\n");
         }
       } else {
         set_led_color(20, 0, 0); // Dim Red (Failed)
         cJSON *rejected = cJSON_GetObjectItem(response_json, "rejected");
+        char rej_reason[64] = "Ditolak Server";
         if (rejected && cJSON_IsArray(rejected)) {
            cJSON *item = cJSON_GetArrayItem(rejected, 0);
            if (item) {
              cJSON *reason = cJSON_GetObjectItem(item, "reason");
-             char msg[64];
-             snprintf(msg, sizeof(msg), "DENIED:%s\n", reason ? reason->valuestring : "Unknown error");
-             uart_send_and_log(msg);
-           } else {
-             uart_send_and_log("DENIED:Ditolak Server\n");
+             if (reason && reason->valuestring) {
+               strncpy(rej_reason, reason->valuestring, sizeof(rej_reason) - 1);
+             }
            }
         } else {
-           uart_send_and_log("DENIED:Ditolak Server\n");
+           cJSON *msg_obj = cJSON_GetObjectItem(response_json, "message");
+           if (msg_obj && msg_obj->valuestring) {
+             strncpy(rej_reason, msg_obj->valuestring, sizeof(rej_reason) - 1);
+           }
         }
+        char msg[96];
+        snprintf(msg, sizeof(msg), "DENIED:%s\n", rej_reason);
+        uart_send_and_log(msg);
       }
       cJSON_Delete(response_json);
     } else {
@@ -362,6 +477,344 @@ static void send_api_request(const char *identifier, const char *type) {
   // Wait 1 second before reverting to idle state
   vTaskDelay(pdMS_TO_TICKS(1000));
   set_led_color(0, 0, 8); // Dim Blue (Idle low power)
+}
+
+static void send_custom_api_request(const char *trans_uid, const char *timestamp, const char *identifier, const char *type, const char *time_source) {
+  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                                         pdFALSE, pdFALSE, 0);
+  if ((bits & WIFI_CONNECTED_BIT) == 0) {
+    ESP_LOGW(TAG, "WiFi not connected, ignoring single transaction HTTP request.");
+    uart_send_and_log("DENIED:WiFi Disconnected\n");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Sending custom transaction: UID=%s, ID=%s", trans_uid, identifier);
+  set_led_color(20, 20, 0); // Yellow
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "transaction_uid", trans_uid);
+  cJSON_AddStringToObject(root, "timestamp", timestamp);
+  cJSON_AddStringToObject(root, "identifier", identifier ? identifier : "TEST");
+  cJSON_AddStringToObject(root, "identifier_type", type ? type : "rfid");
+  cJSON_AddStringToObject(root, "time_source", time_source ? time_source : "rtc");
+
+  char *post_data = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  api_response_len = 0;
+  memset(api_response_buffer, 0, sizeof(api_response_buffer));
+
+  esp_http_client_config_t config = {
+      .url = API_TRANSACTIONS_URL,
+      .event_handler = _http_api_event_handler,
+      .cert_pem = cloudflare_ca_pem,
+  };
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  esp_http_client_set_method(client, HTTP_METHOD_POST);
+  esp_http_client_set_header(client, "X-API-Key", s_api_key);
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_post_field(client, post_data, strlen(post_data));
+
+  esp_task_wdt_reset();
+  esp_err_t err = esp_http_client_perform(client);
+  esp_task_wdt_reset();
+
+  if (err == ESP_OK) {
+    int status_code = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "Custom HTTP Status = %d", status_code);
+
+    cJSON *response_json = cJSON_Parse(api_response_buffer);
+    if (response_json != NULL) {
+      cJSON *success = cJSON_GetObjectItem(response_json, "success");
+      cJSON *result = cJSON_GetObjectItem(response_json, "attendance_result");
+
+      if ((success && cJSON_IsTrue(success)) || result != NULL) {
+        if (result && cJSON_IsObject(result)) {
+           cJSON *id_json = cJSON_GetObjectItem(result, "id");
+           cJSON *name_json = cJSON_GetObjectItem(result, "name");
+           if (!name_json) name_json = cJSON_GetObjectItem(result, "nama");
+           cJSON *pos_json = cJSON_GetObjectItem(result, "position");
+           if (!pos_json) pos_json = cJSON_GetObjectItem(result, "posisi");
+           if (!pos_json) pos_json = cJSON_GetObjectItem(result, "jabatan");
+
+           char id_str[32] = "-";
+           if (id_json) {
+               if (cJSON_IsString(id_json)) snprintf(id_str, sizeof(id_str), "%s", id_json->valuestring);
+               else if (cJSON_IsNumber(id_json)) snprintf(id_str, sizeof(id_str), "%d", id_json->valueint);
+           }
+           const char *name_str = (name_json && cJSON_IsString(name_json)) ? name_json->valuestring : "-";
+           const char *pos_str = (pos_json && cJSON_IsString(pos_json)) ? pos_json->valuestring : "-";
+
+           if (strcmp(name_str, "-") != 0 && strlen(name_str) > 0 &&
+               strcasecmp(name_str, "Akses Diterima") != 0 &&
+               strcasecmp(name_str, "UNKNOWN") != 0) {
+             set_led_color(0, 20, 0); // Green
+             char ok_msg[96];
+             snprintf(ok_msg, sizeof(ok_msg), "TXN_OK:%s\n", trans_uid);
+             uart_send_and_log(ok_msg);
+             vTaskDelay(pdMS_TO_TICKS(60));
+
+             char msg[128];
+             snprintf(msg, sizeof(msg), "GRANTED:%s|%s|%s\n",
+                      (identifier && strlen(identifier) > 0) ? identifier : id_str,
+                      name_str, pos_str);
+             uart_send_and_log(msg);
+           } else {
+             /* Kartu belum di-mapping ke karyawan */
+             set_led_color(20, 0, 0); // Red
+             char err_msg[96];
+             snprintf(err_msg, sizeof(err_msg), "TXN_ERR:%s|Belum Terdaftar\n", trans_uid);
+             uart_send_and_log(err_msg);
+           }
+        } else {
+           /* Tidak ada objek attendance_result */
+           set_led_color(20, 0, 0); // Red
+           char err_msg[96];
+           snprintf(err_msg, sizeof(err_msg), "TXN_ERR:%s|Belum Terdaftar\n", trans_uid);
+           uart_send_and_log(err_msg);
+        }
+      } else {
+        set_led_color(20, 0, 0); // Red
+        cJSON *rejected = cJSON_GetObjectItem(response_json, "rejected");
+        char rej_reason[64] = "Ditolak Server";
+        if (rejected && cJSON_IsArray(rejected)) {
+           cJSON *item = cJSON_GetArrayItem(rejected, 0);
+           if (item) {
+             cJSON *reason = cJSON_GetObjectItem(item, "reason");
+             if (reason && reason->valuestring) {
+               strncpy(rej_reason, reason->valuestring, sizeof(rej_reason) - 1);
+             }
+           }
+        } else {
+           cJSON *msg_obj = cJSON_GetObjectItem(response_json, "message");
+           if (msg_obj && msg_obj->valuestring) {
+             strncpy(rej_reason, msg_obj->valuestring, sizeof(rej_reason) - 1);
+           }
+        }
+        char err_msg[96];
+        snprintf(err_msg, sizeof(err_msg), "TXN_ERR:%s|%s\n", trans_uid, rej_reason);
+        uart_send_and_log(err_msg);
+      }
+      cJSON_Delete(response_json);
+    } else {
+      set_led_color(20, 0, 0);
+      uart_send_and_log("DENIED:Parse Error\n");
+    }
+  } else {
+    ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
+    set_led_color(20, 0, 0);
+    char err_msg[96];
+    snprintf(err_msg, sizeof(err_msg), "TXN_ERR:%s|Koneksi Gagal\n", trans_uid);
+    uart_send_and_log(err_msg);
+  }
+  esp_http_client_cleanup(client);
+  free(post_data);
+
+  vTaskDelay(pdMS_TO_TICKS(500));
+  set_led_color(0, 0, 8); // Idle Blue
+}
+
+static void send_bulk_api_request(cJSON *arr) {
+  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                                         pdFALSE, pdFALSE, 0);
+  if ((bits & WIFI_CONNECTED_BIT) == 0) {
+    ESP_LOGW(TAG, "WiFi not connected, ignoring bulk HTTP request.");
+    cJSON_Delete(arr);
+    uart_send_and_log("BULK_ERR:Wi-Fi Tidak Terhubung!\n");
+    return;
+  }
+
+  int count = cJSON_GetArraySize(arr);
+  ESP_LOGI(TAG, "Sending Bulk request with %d items...", count);
+  set_led_color(20, 20, 0); // Yellow
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddItemToObject(root, "transactions", arr);
+  char *post_data = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  api_response_len = 0;
+  memset(api_response_buffer, 0, sizeof(api_response_buffer));
+
+  esp_http_client_config_t config = {
+      .url = API_TRANSACTIONS_URL,
+      .event_handler = _http_api_event_handler,
+      .cert_pem = cloudflare_ca_pem,
+      .timeout_ms = 10000,
+  };
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  esp_http_client_set_method(client, HTTP_METHOD_POST);
+  esp_http_client_set_header(client, "X-API-Key", s_api_key);
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_post_field(client, post_data, strlen(post_data));
+
+  esp_task_wdt_reset();
+  esp_err_t err = esp_http_client_perform(client);
+  esp_task_wdt_reset();
+
+  int accepted_count = 0;
+  int rejected_count = 0;
+
+  if (err == ESP_OK) {
+    int status_code = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "Bulk HTTP Status = %d, Resp: %s", status_code, api_response_buffer);
+
+    if (status_code == 401) {
+      set_led_color(20, 0, 0); // Red
+      uart_send_and_log("BULK_ERR:API Key Belum Diaktifkan di Dashboard\n");
+      esp_http_client_cleanup(client);
+      free(post_data);
+      vTaskDelay(pdMS_TO_TICKS(500));
+      set_led_color(0, 0, 8);
+      return;
+    }
+
+    cJSON *response_json = cJSON_Parse(api_response_buffer);
+    if (response_json != NULL) {
+      cJSON *succ_item = cJSON_GetObjectItem(response_json, "success");
+      cJSON *acc_item = cJSON_GetObjectItem(response_json, "accepted_count");
+      cJSON *rej_item = cJSON_GetObjectItem(response_json, "rejected_count");
+      cJSON *acc_arr = cJSON_GetObjectItem(response_json, "accepted");
+      cJSON *rej_arr = cJSON_GetObjectItem(response_json, "rejected");
+
+      if (acc_item && cJSON_IsNumber(acc_item)) {
+        accepted_count = acc_item->valueint;
+      } else if (acc_item && cJSON_IsString(acc_item)) {
+        accepted_count = atoi(acc_item->valuestring);
+      } else if (acc_arr && cJSON_IsArray(acc_arr)) {
+        accepted_count = cJSON_GetArraySize(acc_arr);
+      }
+
+      if (rej_item && cJSON_IsNumber(rej_item)) {
+        rejected_count = rej_item->valueint;
+      } else if (rej_item && cJSON_IsString(rej_item)) {
+        rejected_count = atoi(rej_item->valuestring);
+      } else if (rej_arr && cJSON_IsArray(rej_arr)) {
+        rejected_count = cJSON_GetArraySize(rej_arr);
+      }
+
+      /* Fallback jika server mengembalikan HTTP 200 atau success:true tanpa counter eksplisit */
+      if (accepted_count == 0 && rejected_count == 0) {
+        if ((succ_item && cJSON_IsTrue(succ_item)) || (status_code >= 200 && status_code < 300)) {
+          accepted_count = count;
+        }
+      }
+      cJSON_Delete(response_json);
+    } else {
+      if (status_code >= 200 && status_code < 300) {
+        accepted_count = count;
+      }
+    }
+    set_led_color(0, 20, 0); // Green
+  } else {
+    ESP_LOGE(TAG, "Bulk HTTP failed: %s", esp_err_to_name(err));
+    set_led_color(20, 0, 0); // Red
+    char err_buf[64];
+    snprintf(err_buf, sizeof(err_buf), "BULK_ERR:Gagal Hubungi Server (%s)\n", esp_err_to_name(err));
+    uart_send_and_log(err_buf);
+    esp_http_client_cleanup(client);
+    free(post_data);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    set_led_color(0, 0, 8);
+    return;
+  }
+
+  esp_http_client_cleanup(client);
+  free(post_data);
+
+  char ack_msg[64];
+  snprintf(ack_msg, sizeof(ack_msg), "BULK_ACK:%d|%d\n", accepted_count, rejected_count);
+  uart_send_and_log(ack_msg);
+
+  vTaskDelay(pdMS_TO_TICKS(500));
+  set_led_color(0, 0, 8); // Idle Blue
+}
+
+static void send_register_device_request(const char *code, const char *name) {
+  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                                         pdFALSE, pdFALSE, 0);
+  if ((bits & WIFI_CONNECTED_BIT) == 0) {
+    ESP_LOGW(TAG, "WiFi not connected, cannot register device.");
+    uart_send_and_log("REG_ERR:Wi-Fi Tidak Terhubung!\n");
+    return;
+  }
+
+  set_led_color(20, 20, 0); // Yellow
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "device_code", code);
+  cJSON_AddStringToObject(root, "device_name", name);
+  cJSON_AddStringToObject(root, "location", "Lobby");
+  cJSON_AddStringToObject(root, "firmware_version", "1.0.0");
+  char *post_data = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  api_response_len = 0;
+  memset(api_response_buffer, 0, sizeof(api_response_buffer));
+
+  esp_http_client_config_t config = {
+      .url = API_REGISTER_URL,
+      .event_handler = _http_api_event_handler,
+      .cert_pem = cloudflare_ca_pem,
+      .timeout_ms = 8000,
+  };
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  esp_http_client_set_method(client, HTTP_METHOD_POST);
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_post_field(client, post_data, strlen(post_data));
+
+  esp_task_wdt_reset();
+  esp_err_t err = esp_http_client_perform(client);
+  esp_task_wdt_reset();
+
+  if (err == ESP_OK) {
+    int status_code = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "Register HTTP Status = %d, Resp: %s", status_code, api_response_buffer);
+    cJSON *resp_json = cJSON_Parse(api_response_buffer);
+    if (resp_json != NULL) {
+      cJSON *succ = cJSON_GetObjectItem(resp_json, "success");
+      cJSON *key = cJSON_GetObjectItem(resp_json, "api_key");
+      if (succ && cJSON_IsTrue(succ) && key && cJSON_IsString(key)) {
+        strncpy(s_api_key, key->valuestring, sizeof(s_api_key) - 1);
+        s_api_key[sizeof(s_api_key) - 1] = '\0';
+
+        nvs_handle_t my_handle;
+        if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+          nvs_set_str(my_handle, "api_key", s_api_key);
+          nvs_commit(my_handle);
+          nvs_close(my_handle);
+          ESP_LOGI(TAG, "Saved new API Key from register to NVS: %s", s_api_key);
+        }
+        set_led_color(0, 20, 0); // Green
+        char msg[96];
+        snprintf(msg, sizeof(msg), "REG_OK:Device %s Terdaftar! Aktifkan di Dashboard\n", code);
+        uart_send_and_log(msg);
+      } else {
+        set_led_color(20, 0, 0); // Red
+        cJSON *msg_item = cJSON_GetObjectItem(resp_json, "message");
+        const char *err_str = (msg_item && cJSON_IsString(msg_item)) ? msg_item->valuestring : "Ditolak Server";
+        char msg[96];
+        snprintf(msg, sizeof(msg), "REG_ERR:%.80s\n", err_str);
+        uart_send_and_log(msg);
+      }
+      cJSON_Delete(resp_json);
+    } else {
+      set_led_color(20, 0, 0);
+      uart_send_and_log("REG_ERR:Format JSON Tidak Valid\n");
+    }
+  } else {
+    ESP_LOGE(TAG, "Register HTTP failed: %s", esp_err_to_name(err));
+    set_led_color(20, 0, 0);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "REG_ERR:Gagal Hubungi Server (%s)\n", esp_err_to_name(err));
+    uart_send_and_log(msg);
+  }
+
+  esp_http_client_cleanup(client);
+  free(post_data);
+
+  vTaskDelay(pdMS_TO_TICKS(500));
+  set_led_color(0, 0, 8); // Idle Blue
 }
 
 static void button_task(void *pvParameters) {
@@ -443,7 +896,7 @@ static void sync_time_task(void *pvParameters) {
             .cert_pem = cloudflare_ca_pem,
         };
         esp_http_client_handle_t client = esp_http_client_init(&config);
-        esp_http_client_set_header(client, "X-API-Key", API_KEY);
+        esp_http_client_set_header(client, "X-API-Key", s_api_key);
 
         esp_err_t err = esp_http_client_perform(client);
         if (err == ESP_OK) {
@@ -501,6 +954,10 @@ static void uart_task(void *pvParameters) {
   ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
   ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_TXD_PIN, UART_RXD_PIN,
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+  /* Aktifkan UART Wakeup agar saat ESP32 dalam modem sleep / light sleep,
+     sinyal serial dari STM32 langsung membangunkan ESP32 secara instan tanpa kehilangan byte */
+  uart_set_wakeup_threshold(UART_PORT_NUM, 3);
+  esp_sleep_enable_uart_wakeup(UART_PORT_NUM);
 
   uint8_t *data = (uint8_t *)malloc(BUF_SIZE);
   char rfid_str[256];
@@ -524,6 +981,104 @@ static void uart_task(void *pvParameters) {
               send_api_request(rfid_str + 5, "rfid");
             } else if (strncmp(rfid_str, "BARCODE:", 8) == 0) {
               send_api_request(rfid_str + 8, "qr");
+            } else if (strncmp(rfid_str, "TXN:", 4) == 0) {
+              char *p = rfid_str + 4;
+              char *nl = strpbrk(p, "\r\n");
+              if (nl) *nl = '\0';
+              char *t_uid  = strtok(p, "|");
+              char *t_time = strtok(NULL, "|");
+              char *t_id   = strtok(NULL, "|");
+              char *t_type = strtok(NULL, "|");
+              char *t_src  = strtok(NULL, "|");
+              if (t_uid && t_time && t_id) {
+                send_custom_api_request(t_uid, t_time, t_id, t_type ? t_type : "rfid", t_src ? t_src : "rtc");
+              }
+            } else if (strncmp(rfid_str, "BULK_START:", 11) == 0) {
+              if (s_bulk_transactions_array) {
+                cJSON_Delete(s_bulk_transactions_array);
+              }
+              s_bulk_transactions_array = cJSON_CreateArray();
+              ESP_LOGI(TAG, "Bulk transfer started, expected items: %s", rfid_str + 11);
+            } else if (strncmp(rfid_str, "BULK_ITEM:", 10) == 0) {
+              if (s_bulk_transactions_array) {
+                char *p = rfid_str + 10;
+                char *nl = strpbrk(p, "\r\n");
+                if (nl) *nl = '\0';
+                char *t_uid  = strtok(p, "|,");
+                char *t_time = strtok(NULL, "|,");
+                char *t_id   = strtok(NULL, "|,");
+                char *t_type = strtok(NULL, "|,");
+                char *t_src  = strtok(NULL, "|,");
+                if (t_uid && t_time && t_id) {
+                  cJSON *item = cJSON_CreateObject();
+                  cJSON_AddStringToObject(item, "transaction_uid", t_uid);
+                  cJSON_AddStringToObject(item, "timestamp", t_time);
+                  cJSON_AddStringToObject(item, "identifier", t_id);
+                  cJSON_AddStringToObject(item, "identifier_type", t_type ? t_type : "rfid");
+                  cJSON_AddStringToObject(item, "time_source", t_src ? t_src : "rtc");
+                  cJSON_AddItemToArray(s_bulk_transactions_array, item);
+                }
+              }
+            } else if (strncmp(rfid_str, "BULK_END", 8) == 0) {
+              if (s_bulk_transactions_array) {
+                send_bulk_api_request(s_bulk_transactions_array);
+                s_bulk_transactions_array = NULL;
+              } else {
+                uart_send_and_log("BULK_ACK:0|0\n");
+              }
+            } else if (strncmp(rfid_str, "CMD:REGISTER_DEVICE:", 20) == 0) {
+              char *p = rfid_str + 20;
+              char *nl = strpbrk(p, "\r\n");
+              if (nl) *nl = '\0';
+              char *bar = strchr(p, '|');
+              if (bar) {
+                *bar = '\0';
+                strncpy(s_device_code, p, sizeof(s_device_code) - 1);
+                strncpy(s_device_name, bar + 1, sizeof(s_device_name) - 1);
+              } else {
+                strncpy(s_device_code, p, sizeof(s_device_code) - 1);
+              }
+              nvs_handle_t my_handle;
+              if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+                nvs_set_str(my_handle, "dev_code", s_device_code);
+                nvs_set_str(my_handle, "dev_name", s_device_name);
+                nvs_commit(my_handle);
+                nvs_close(my_handle);
+                ESP_LOGI(TAG, "Device config saved: Code='%s', Name='%s'", s_device_code, s_device_name);
+              }
+              send_register_device_request(s_device_code, s_device_name);
+            } else if (strncmp(rfid_str, "CMD:SET_DEVICE:", 15) == 0) {
+              char *p = rfid_str + 15;
+              char *nl = strpbrk(p, "\r\n");
+              if (nl) *nl = '\0';
+              char *bar = strchr(p, '|');
+              if (bar) {
+                *bar = '\0';
+                strncpy(s_device_code, p, sizeof(s_device_code) - 1);
+                strncpy(s_device_name, bar + 1, sizeof(s_device_name) - 1);
+              } else {
+                strncpy(s_device_code, p, sizeof(s_device_code) - 1);
+              }
+              nvs_handle_t my_handle;
+              if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+                nvs_set_str(my_handle, "dev_code", s_device_code);
+                nvs_set_str(my_handle, "dev_name", s_device_name);
+                nvs_commit(my_handle);
+                nvs_close(my_handle);
+                ESP_LOGI(TAG, "Device config saved: Code='%s', Name='%s'", s_device_code, s_device_name);
+              }
+              uart_send_and_log("DEVICE_SAVED\n");
+            } else if (strncmp(rfid_str, "CMD:SET_SYNC_MODE:", 18) == 0) {
+              char *p = rfid_str + 18;
+              int mode = atoi(p);
+              nvs_handle_t my_handle;
+              if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+                nvs_set_i32(my_handle, "sync_mode", mode);
+                nvs_commit(my_handle);
+                nvs_close(my_handle);
+                ESP_LOGI(TAG, "Sync mode saved to NVS: %d", mode);
+              }
+              uart_send_and_log("SYNC_MODE_SAVED\n");
             } else if (strncmp(rfid_str, "CMD:SYNC_TIME", 13) == 0) {
               EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
               if (!(bits & WIFI_CONNECTED_BIT)) {
@@ -531,13 +1086,19 @@ static void uart_task(void *pvParameters) {
               } else {
                 xSemaphoreGive(sync_time_sem);
               }
-            } else if (strncmp(rfid_str, "CMD:GET_WIFI_STATUS", 19) == 0) {
+            } else if (strncmp(rfid_str, "CMD:GET_WIFI_STATUS", 19) == 0 ||
+                       strncmp(rfid_str, "CHECK_WIFI", 10) == 0) {
               EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
               if (bits & WIFI_CONNECTED_BIT) {
                 uart_send_and_log("WIFI:OK\n");
               } else {
                 uart_send_and_log("WIFI:FAIL\n");
               }
+              vTaskDelay(pdMS_TO_TICKS(40));
+              send_wifi_status_info();
+            } else if (strncmp(rfid_str, "CMD:GET_WIFI_INFO", 17) == 0 ||
+                       strncmp(rfid_str, "GET_INFO", 8) == 0) {
+              send_wifi_status_info();
             } else if (strncmp(rfid_str, "WIFI:", 5) == 0) {
               char *data = rfid_str + 5;
               /* Bersihkan karakter newline dan carriage return */
