@@ -44,7 +44,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+extern IWDG_HandleTypeDef hiwdg;
 /* USER CODE END Variables */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -54,13 +54,29 @@
 
 /* Hook prototypes */
 void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName);
+void vApplicationMallocFailedHook(void);
 
 /* USER CODE BEGIN 4 */
 void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
 {
-   /* Run time stack overflow checking is performed if
-   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
-   called if a stack overflow is detected. */
+  (void)xTask;
+  (void)pcTaskName;
+  taskDISABLE_INTERRUPTS();
+  while (1) {
+    HAL_GPIO_TogglePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin);
+    for (volatile uint32_t i = 0; i < 400000; i++) {}
+    HAL_IWDG_Refresh(&hiwdg);
+  }
+}
+
+void vApplicationMallocFailedHook(void)
+{
+  taskDISABLE_INTERRUPTS();
+  while (1) {
+    HAL_GPIO_TogglePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin);
+    for (volatile uint32_t i = 0; i < 200000; i++) {}
+    HAL_IWDG_Refresh(&hiwdg);
+  }
 }
 /* USER CODE END 4 */
 

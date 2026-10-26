@@ -47,6 +47,12 @@ extern bool g_wifi_connected;
 /* Status Tema */
 static bool g_theme_is_dark = true;
 
+/* ========================================================================== */
+/*     CACHE RIWAYAT DATA ADMIN (SRAM1)                                       */
+/* ========================================================================== */
+static user_entry_t s_admin_users_cache[48];
+static char         s_admin_logs_cache[16][64];
+
 /* Objek Layar LVGL */
 static lv_obj_t * screen_main     = NULL;
 static lv_obj_t * screen_password = NULL;
@@ -104,8 +110,15 @@ static lv_obj_t * lbl_admin_title     = NULL;
 static lv_obj_t * lbl_admin_clock     = NULL;
 static lv_obj_t * tabview_admin       = NULL;
 
-/* Tab 1: Identitas Device & PIN Admin */
-static lv_obj_t * tab_device          = NULL;
+/* 4 Tab Utama Admin */
+static lv_obj_t * tab_sistem          = NULL;
+static lv_obj_t * tab_jaringan        = NULL;
+static lv_obj_t * tab_data            = NULL;
+static lv_obj_t * tab_diagnostik      = NULL;
+
+/* Tab 1: Sistem & Identitas */
+static lv_obj_t * card_sistem_dev     = NULL;
+static lv_obj_t * lbl_sec_dev_t       = NULL;
 static lv_obj_t * lbl_dev_code_t      = NULL;
 static lv_obj_t * ta_device_code      = NULL;
 static lv_obj_t * lbl_dev_name_t      = NULL;
@@ -116,20 +129,11 @@ static lv_obj_t * btn_save_device     = NULL;
 static lv_obj_t * lbl_save_dev_btn    = NULL;
 static lv_obj_t * lbl_device_feedback = NULL;
 
-/* Tab 2: Sinkronisasi Server */
-static lv_obj_t * tab_sync            = NULL;
-static lv_obj_t * lbl_sync_mode_t     = NULL;
-static lv_obj_t * dropdown_sync_mode  = NULL;
-static lv_obj_t * lbl_pending_count   = NULL;
-static lv_obj_t * btn_bulk_sync       = NULL;
-static lv_obj_t * lbl_bulk_sync_btn   = NULL;
-static lv_obj_t * lbl_sync_feedback   = NULL;
-
-/* Tab 3: Tampilan & Sistem */
+static lv_obj_t * card_sistem_disp    = NULL;
+static lv_obj_t * lbl_sec_disp_t      = NULL;
 static lv_obj_t * lbl_bright_title    = NULL;
 static lv_obj_t * slider_brightness   = NULL;
 static lv_obj_t * lbl_bright_val      = NULL;
-static lv_obj_t * lbl_theme_title     = NULL;
 static lv_obj_t * sw_theme            = NULL;
 static lv_obj_t * lbl_theme_desc      = NULL;
 static lv_obj_t * lbl_timeout_title   = NULL;
@@ -138,29 +142,72 @@ static lv_obj_t * lbl_lpcd_title      = NULL;
 static lv_obj_t * dropdown_lpcd_delta = NULL;
 static lv_obj_t * lbl_lpcd_int_title  = NULL;
 static lv_obj_t * dropdown_lpcd_interval = NULL;
+
+static lv_obj_t * card_sistem_act     = NULL;
+static lv_obj_t * lbl_sec_act_t       = NULL;
 static lv_obj_t * btn_test_beep       = NULL;
 static lv_obj_t * lbl_t_beep          = NULL;
 static lv_obj_t * btn_reset_stats     = NULL;
 static lv_obj_t * lbl_t_reset         = NULL;
-static lv_obj_t * btn_ntp_sync        = NULL;
-static lv_obj_t * lbl_t_ntp           = NULL;
 static lv_obj_t * lbl_admin_feedback  = NULL;
 
-/* Tab: Pengguna MicroSD (USERS.CSV) */
-static lv_obj_t * tab_users           = NULL;
-static lv_obj_t * lbl_users_title     = NULL;
-static lv_obj_t * lbl_users_count     = NULL;
-static lv_obj_t * btn_refresh_users   = NULL;
-static lv_obj_t * lbl_refresh_users   = NULL;
-static lv_obj_t * cont_users_list     = NULL;
-static lv_obj_t * table_users         = NULL;
+/* Tab 2: Jaringan & Sinkronisasi */
+static lv_obj_t * card_wifi_setup     = NULL;
+static lv_obj_t * lbl_sec_wifi_t      = NULL;
+static lv_obj_t * lbl_ssid_t          = NULL;
+static lv_obj_t * ta_wifi_ssid        = NULL;
+static lv_obj_t * lbl_pass_t          = NULL;
+static lv_obj_t * ta_wifi_pass        = NULL;
+static lv_obj_t * btn_save_wifi       = NULL;
+static lv_obj_t * lbl_save_btn        = NULL;
+static lv_obj_t * lbl_wifi_feedback   = NULL;
+static lv_obj_t * kb_wifi             = NULL;
 
-/* Tab: Diagnostik & Informasi Perangkat */
-static lv_obj_t * tab_info            = NULL;
-static lv_obj_t * lbl_info_title      = NULL;
+static lv_obj_t * card_sync_setup     = NULL;
+static lv_obj_t * lbl_sec_sync_t      = NULL;
+static lv_obj_t * lbl_sync_mode_t     = NULL;
+static lv_obj_t * dropdown_sync_mode  = NULL;
+static lv_obj_t * lbl_pending_count   = NULL;
+static lv_obj_t * btn_bulk_sync       = NULL;
+static lv_obj_t * lbl_bulk_sync_btn   = NULL;
+static lv_obj_t * btn_ntp_sync        = NULL;
+static lv_obj_t * lbl_t_ntp           = NULL;
+static lv_obj_t * lbl_sync_feedback   = NULL;
+
+/* Tab 3: Data MicroSD (Users & Logs dengan Selector Switch) */
+static lv_obj_t * btn_data_switch_users = NULL;
+static lv_obj_t * lbl_data_switch_users = NULL;
+static lv_obj_t * btn_data_switch_logs  = NULL;
+static lv_obj_t * lbl_data_switch_logs  = NULL;
+static lv_obj_t * cont_users_section    = NULL;
+static lv_obj_t * lbl_users_title       = NULL;
+static lv_obj_t * lbl_users_count       = NULL;
+static lv_obj_t * btn_refresh_users     = NULL;
+static lv_obj_t * lbl_refresh_users     = NULL;
+static lv_obj_t * cont_users_list       = NULL;
+static lv_obj_t * table_users           = NULL;
+
+static lv_obj_t * cont_logs_section     = NULL;
+static lv_obj_t * lbl_log_title         = NULL;
+static lv_obj_t * btn_refresh_log       = NULL;
+static lv_obj_t * lbl_refresh_log       = NULL;
+static lv_obj_t * cont_log_list         = NULL;
+static lv_obj_t * table_log             = NULL;
+
+/* Tab 4: Diagnostik Hardware & Info Device */
+static lv_obj_t * btn_diag_all        = NULL;
+static lv_obj_t * btn_diag_beep       = NULL;
+static lv_obj_t * btn_diag_rfid       = NULL;
+static lv_obj_t * btn_diag_sd         = NULL;
+static lv_obj_t * btn_diag_wifi       = NULL;
+static lv_obj_t * btn_diag_rtc        = NULL;
 static lv_obj_t * btn_refresh_info    = NULL;
 static lv_obj_t * lbl_refresh_info    = NULL;
-static lv_obj_t * cont_info_box       = NULL;
+static lv_obj_t * cont_diag_box       = NULL;
+static lv_obj_t * lbl_diag_title      = NULL;
+static lv_obj_t * lbl_diag_summary    = NULL;
+static lv_obj_t * lbl_diag_detail     = NULL;
+
 static lv_obj_t * lbl_info_wifi_sec   = NULL;
 static lv_obj_t * lbl_info_wifi_proto = NULL;
 static lv_obj_t * lbl_info_wifi_status= NULL;
@@ -174,37 +221,6 @@ static lv_obj_t * lbl_info_sys_sec    = NULL;
 static lv_obj_t * lbl_info_fw_ver     = NULL;
 static lv_obj_t * lbl_info_mcu_info   = NULL;
 static lv_obj_t * lbl_info_mem_info   = NULL;
-
-/* Tab 4: Wi-Fi Setup */
-static lv_obj_t * lbl_ssid_t          = NULL;
-static lv_obj_t * ta_wifi_ssid        = NULL;
-static lv_obj_t * lbl_pass_t          = NULL;
-static lv_obj_t * ta_wifi_pass        = NULL;
-static lv_obj_t * btn_save_wifi       = NULL;
-static lv_obj_t * lbl_save_btn        = NULL;
-static lv_obj_t * lbl_wifi_feedback   = NULL;
-static lv_obj_t * kb_wifi             = NULL;
-
-/* Tab 5: Log Absensi MicroSD */
-static lv_obj_t * tab_log             = NULL;
-static lv_obj_t * lbl_log_title       = NULL;
-static lv_obj_t * btn_refresh_log     = NULL;
-static lv_obj_t * lbl_refresh_log     = NULL;
-static lv_obj_t * cont_log_list       = NULL;
-static lv_obj_t * table_log           = NULL;
-
-/* Tab 6: Test Device (Diagnostik Hardware) */
-static lv_obj_t * tab_test            = NULL;
-static lv_obj_t * btn_diag_all        = NULL;
-static lv_obj_t * btn_diag_beep       = NULL;
-static lv_obj_t * btn_diag_rfid       = NULL;
-static lv_obj_t * btn_diag_sd         = NULL;
-static lv_obj_t * btn_diag_wifi       = NULL;
-static lv_obj_t * btn_diag_rtc        = NULL;
-static lv_obj_t * cont_diag_box       = NULL;
-static lv_obj_t * lbl_diag_title      = NULL;
-static lv_obj_t * lbl_diag_summary    = NULL;
-static lv_obj_t * lbl_diag_detail     = NULL;
 
 /* Warning & Info Modal Popups */
 static lv_obj_t * modal_sd_warning    = NULL;
@@ -256,6 +272,7 @@ static void dropdown_lpcd_delta_cb(lv_event_t * e);
 static void dropdown_lpcd_interval_cb(lv_event_t * e);
 static void btn_refresh_users_cb(lv_event_t * e);
 static void btn_refresh_info_cb(lv_event_t * e);
+static void btn_data_switch_cb(lv_event_t * e);
 
 /* Diagnostic Callbacks */
 static void btn_diag_beep_cb(lv_event_t * e);
@@ -964,201 +981,164 @@ static void build_screen_admin(void)
         lv_obj_remove_flag(tv_cont, LV_OBJ_FLAG_SCROLLABLE);
     }
 
-    tab_device            = lv_tabview_add_tab(tabview_admin, "DEVICE");
-    lv_obj_t * tab_sistem = lv_tabview_add_tab(tabview_admin, "SISTEM");
-    tab_users             = lv_tabview_add_tab(tabview_admin, "USERS");
-    tab_info              = lv_tabview_add_tab(tabview_admin, "INFO");
-    tab_sync              = lv_tabview_add_tab(tabview_admin, "SINKRON");
-    lv_obj_t * tab_wifi   = lv_tabview_add_tab(tabview_admin, "WI-FI");
-    tab_log               = lv_tabview_add_tab(tabview_admin, "LOG");
-    tab_test              = lv_tabview_add_tab(tabview_admin, "TEST");
+    tab_sistem     = lv_tabview_add_tab(tabview_admin, "SISTEM");
+    tab_jaringan   = lv_tabview_add_tab(tabview_admin, "JARINGAN");
+    tab_data       = lv_tabview_add_tab(tabview_admin, "DATA");
+    tab_diagnostik = lv_tabview_add_tab(tabview_admin, "DIAGNOSTIK");
 
     /* ====================================================================== */
-    /* TAB 1: IDENTITAS DEVICE & PIN ADMIN                                    */
+    /* TAB 1: SISTEM (IDENTITAS, DISPLAY, LPCD RFID, QUICK ACTION)            */
     /* ====================================================================== */
-    lv_obj_set_style_pad_all(tab_device, 8, 0);
+    lv_obj_set_style_pad_all(tab_sistem, 8, 0);
 
-    lbl_dev_code_t = lv_label_create(tab_device);
-    lv_obj_set_pos(lbl_dev_code_t, 10, 8);
-    lv_label_set_text(lbl_dev_code_t, "Kode Device:");
-    lv_obj_set_style_text_color(lbl_dev_code_t, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    /* Panel 1: Identitas Device & Akses PIN */
+    card_sistem_dev = lv_obj_create(tab_sistem);
+    lv_obj_set_pos(card_sistem_dev, 4, 4);
+    lv_obj_set_size(card_sistem_dev, 444, 98);
+    lv_obj_set_style_radius(card_sistem_dev, 8, 0);
+    lv_obj_set_style_pad_all(card_sistem_dev, 6, 0);
+    lv_obj_remove_flag(card_sistem_dev, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_sec_dev_t = lv_label_create(card_sistem_dev);
+    lv_obj_set_pos(lbl_sec_dev_t, 6, 2);
+    lv_label_set_text(lbl_sec_dev_t, "1. IDENTITAS PERANGKAT & AKSES");
+    lv_obj_set_style_text_color(lbl_sec_dev_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_sec_dev_t, &lv_font_montserrat_14, 0);
+
+    lbl_dev_code_t = lv_label_create(card_sistem_dev);
+    lv_obj_set_pos(lbl_dev_code_t, 6, 24);
+    lv_label_set_text(lbl_dev_code_t, "Kode:");
     lv_obj_set_style_text_font(lbl_dev_code_t, &lv_font_montserrat_14, 0);
 
-    ta_device_code = lv_textarea_create(tab_device);
-    lv_obj_set_pos(ta_device_code, 120, 4);
-    lv_obj_set_size(ta_device_code, 160, 32);
-    lv_textarea_set_placeholder_text(ta_device_code, "Contoh: GATE-001");
+    ta_device_code = lv_textarea_create(card_sistem_dev);
+    lv_obj_set_pos(ta_device_code, 48, 20);
+    lv_obj_set_size(ta_device_code, 110, 30);
+    lv_textarea_set_placeholder_text(ta_device_code, "GATE-001");
     lv_textarea_set_one_line(ta_device_code, true);
     lv_obj_add_event_cb(ta_device_code, ta_wifi_focus_cb, LV_EVENT_ALL, NULL);
 
-    lbl_dev_name_t = lv_label_create(tab_device);
-    lv_obj_set_pos(lbl_dev_name_t, 10, 44);
-    lv_label_set_text(lbl_dev_name_t, "Nama Device:");
-    lv_obj_set_style_text_color(lbl_dev_name_t, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    lbl_dev_name_t = lv_label_create(card_sistem_dev);
+    lv_obj_set_pos(lbl_dev_name_t, 164, 24);
+    lv_label_set_text(lbl_dev_name_t, "Nama:");
     lv_obj_set_style_text_font(lbl_dev_name_t, &lv_font_montserrat_14, 0);
 
-    ta_device_name = lv_textarea_create(tab_device);
-    lv_obj_set_pos(ta_device_name, 120, 40);
-    lv_obj_set_size(ta_device_name, 160, 32);
-    lv_textarea_set_placeholder_text(ta_device_name, "Contoh: Gate Utama");
+    ta_device_name = lv_textarea_create(card_sistem_dev);
+    lv_obj_set_pos(ta_device_name, 214, 20);
+    lv_obj_set_size(ta_device_name, 114, 30);
+    lv_textarea_set_placeholder_text(ta_device_name, "Gate Utama");
     lv_textarea_set_one_line(ta_device_name, true);
     lv_obj_add_event_cb(ta_device_name, ta_wifi_focus_cb, LV_EVENT_ALL, NULL);
 
-    lbl_admin_pin_t = lv_label_create(tab_device);
-    lv_obj_set_pos(lbl_admin_pin_t, 10, 80);
-    lv_label_set_text(lbl_admin_pin_t, "PIN Admin:");
-    lv_obj_set_style_text_color(lbl_admin_pin_t, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    btn_save_device = lv_button_create(card_sistem_dev);
+    lv_obj_set_pos(btn_save_device, 334, 20);
+    lv_obj_set_size(btn_save_device, 98, 64);
+    lv_obj_set_style_bg_color(btn_save_device, lv_color_hex(0x064E3B), 0);
+    lv_obj_set_style_border_color(btn_save_device, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    lv_obj_set_style_border_width(btn_save_device, 1, 0);
+    lv_obj_set_style_radius(btn_save_device, 6, 0);
+    lv_obj_add_event_cb(btn_save_device, btn_save_device_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_save_dev_btn = lv_label_create(btn_save_device);
+    lv_obj_center(lbl_save_dev_btn);
+    lv_label_set_text(lbl_save_dev_btn, "SIMPAN\nDEVICE");
+    lv_obj_set_style_text_align(lbl_save_dev_btn, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(lbl_save_dev_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    lv_obj_set_style_text_font(lbl_save_dev_btn, &lv_font_montserrat_14, 0);
+
+    lbl_admin_pin_t = lv_label_create(card_sistem_dev);
+    lv_obj_set_pos(lbl_admin_pin_t, 6, 58);
+    lv_label_set_text(lbl_admin_pin_t, "PIN:");
     lv_obj_set_style_text_font(lbl_admin_pin_t, &lv_font_montserrat_14, 0);
 
-    ta_admin_pin = lv_textarea_create(tab_device);
-    lv_obj_set_pos(ta_admin_pin, 120, 76);
-    lv_obj_set_size(ta_admin_pin, 160, 32);
+    ta_admin_pin = lv_textarea_create(card_sistem_dev);
+    lv_obj_set_pos(ta_admin_pin, 48, 54);
+    lv_obj_set_size(ta_admin_pin, 110, 30);
     lv_textarea_set_password_mode(ta_admin_pin, true);
     lv_textarea_set_placeholder_text(ta_admin_pin, "Min 4 digit");
     lv_textarea_set_one_line(ta_admin_pin, true);
     lv_obj_add_event_cb(ta_admin_pin, ta_wifi_focus_cb, LV_EVENT_ALL, NULL);
 
-    btn_save_device = lv_button_create(tab_device);
-    lv_obj_set_pos(btn_save_device, 295, 12);
-    lv_obj_set_size(btn_save_device, 145, 80);
-    lv_obj_set_style_bg_color(btn_save_device, lv_color_hex(0x064E3B), 0);
-    lv_obj_set_style_border_color(btn_save_device, lv_color_hex(COLOR_GREEN_STATUS), 0);
-    lv_obj_set_style_border_width(btn_save_device, 1, 0);
-    lv_obj_set_style_radius(btn_save_device, 8, 0);
-    lv_obj_add_event_cb(btn_save_device, btn_save_device_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_save_dev_btn = lv_label_create(btn_save_device);
-    lv_obj_center(lbl_save_dev_btn);
-    lv_label_set_text(lbl_save_dev_btn, "SIMPAN DEVICE\n& PIN ADMIN");
-    lv_obj_set_style_text_align(lbl_save_dev_btn, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_save_dev_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
-    lv_obj_set_style_text_font(lbl_save_dev_btn, &lv_font_montserrat_14, 0);
-
-    lbl_device_feedback = lv_label_create(tab_device);
-    lv_obj_set_pos(lbl_device_feedback, 10, 118);
-    lv_obj_set_width(lbl_device_feedback, 430);
-    lv_label_set_text(lbl_device_feedback, "Status: Siap (Master PIN darurat: 9999)");
+    lbl_device_feedback = lv_label_create(card_sistem_dev);
+    lv_obj_set_pos(lbl_device_feedback, 164, 58);
+    lv_obj_set_width(lbl_device_feedback, 165);
+    lv_label_set_text(lbl_device_feedback, "Status: Siap (Master: 9999)");
     lv_obj_set_style_text_color(lbl_device_feedback, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_device_feedback, &lv_font_montserrat_14, 0);
 
-    /* ====================================================================== */
-    /* TAB 2: METODE SINKRONISASI SERVER (REALTIME / PERIODIK BULK)            */
-    /* ====================================================================== */
-    lv_obj_set_style_pad_all(tab_sync, 8, 0);
+    /* Panel 2: Display & Sensor LPCD RFID */
+    card_sistem_disp = lv_obj_create(tab_sistem);
+    lv_obj_set_pos(card_sistem_disp, 4, 108);
+    lv_obj_set_size(card_sistem_disp, 444, 126);
+    lv_obj_set_style_radius(card_sistem_disp, 8, 0);
+    lv_obj_set_style_pad_all(card_sistem_disp, 6, 0);
+    lv_obj_remove_flag(card_sistem_disp, LV_OBJ_FLAG_SCROLLABLE);
 
-    lbl_sync_mode_t = lv_label_create(tab_sync);
-    lv_obj_set_pos(lbl_sync_mode_t, 10, 8);
-    lv_label_set_text(lbl_sync_mode_t, "Metode Sinkronisasi:");
-    lv_obj_set_style_text_color(lbl_sync_mode_t, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_sync_mode_t, &lv_font_montserrat_14, 0);
+    lbl_sec_disp_t = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_sec_disp_t, 6, 2);
+    lv_label_set_text(lbl_sec_disp_t, "2. DISPLAY & SENSOR LPCD RFID");
+    lv_obj_set_style_text_color(lbl_sec_disp_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_sec_disp_t, &lv_font_montserrat_14, 0);
 
-    dropdown_sync_mode = lv_dropdown_create(tab_sync);
-    lv_obj_set_pos(dropdown_sync_mode, 180, 4);
-    lv_obj_set_size(dropdown_sync_mode, 250, 32);
-    lv_dropdown_set_options(dropdown_sync_mode,
-        "Realtime (Langsung Kirim)\n"
-        "Periodik 10 Menit (Bulk)\n"
-        "Periodik 30 Menit (Bulk)\n"
-        "Periodik 1 Jam (Bulk)\n"
-        "Periodik 1 Hari (Bulk)");
-    lv_dropdown_set_selected(dropdown_sync_mode, g_app_settings.sync_mode);
-    lv_obj_add_event_cb(dropdown_sync_mode, dropdown_sync_cb, LV_EVENT_VALUE_CHANGED, NULL);
-
-    lbl_pending_count = lv_label_create(tab_sync);
-    lv_obj_set_pos(lbl_pending_count, 10, 48);
-    lv_obj_set_width(lbl_pending_count, 420);
-    lv_label_set_text(lbl_pending_count, "Antrian Belum Sinkron: 0 data");
-    lv_obj_set_style_text_color(lbl_pending_count, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    lv_obj_set_style_text_font(lbl_pending_count, &lv_font_montserrat_14, 0);
-
-    btn_bulk_sync = lv_button_create(tab_sync);
-    lv_obj_set_pos(btn_bulk_sync, 10, 78);
-    lv_obj_set_size(btn_bulk_sync, 260, 36);
-    lv_obj_set_style_bg_color(btn_bulk_sync, lv_color_hex(0x064E3B), 0);
-    lv_obj_set_style_border_color(btn_bulk_sync, lv_color_hex(COLOR_GREEN_STATUS), 0);
-    lv_obj_set_style_border_width(btn_bulk_sync, 1, 0);
-    lv_obj_set_style_radius(btn_bulk_sync, 8, 0);
-    lv_obj_add_event_cb(btn_bulk_sync, btn_bulk_sync_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_bulk_sync_btn = lv_label_create(btn_bulk_sync);
-    lv_obj_center(lbl_bulk_sync_btn);
-    lv_label_set_text(lbl_bulk_sync_btn, LV_SYMBOL_REFRESH " START SYNC MANUAL");
-    lv_obj_set_style_text_color(lbl_bulk_sync_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
-    lv_obj_set_style_text_font(lbl_bulk_sync_btn, &lv_font_montserrat_14, 0);
-
-    lbl_sync_feedback = lv_label_create(tab_sync);
-    lv_obj_set_pos(lbl_sync_feedback, 10, 122);
-    lv_obj_set_width(lbl_sync_feedback, 440);
-    lv_label_set_text(lbl_sync_feedback, "Status: Siap");
-    lv_obj_set_style_text_color(lbl_sync_feedback, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
-    lv_obj_set_style_text_font(lbl_sync_feedback, &lv_font_montserrat_14, 0);
-
-    /* ====================================================================== */
-    /* TAB 3: SISTEM & DISPLAY                                                */
-    /* ====================================================================== */
-    lv_obj_set_style_pad_all(tab_sistem, 8, 0);
-
-    /* Baris 1: Kecerahan Layar */
-    lbl_bright_title = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_bright_title, 10, 6);
-    lv_label_set_text(lbl_bright_title, "Kecerahan Layar:");
-    lv_obj_set_style_text_color(lbl_bright_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    lbl_bright_title = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_bright_title, 6, 24);
+    lv_label_set_text(lbl_bright_title, "Kecerahan:");
     lv_obj_set_style_text_font(lbl_bright_title, &lv_font_montserrat_14, 0);
 
-    slider_brightness = lv_slider_create(tab_sistem);
-    lv_obj_set_pos(slider_brightness, 150, 8);
-    lv_obj_set_size(slider_brightness, 180, 16);
+    slider_brightness = lv_slider_create(card_sistem_disp);
+    lv_obj_set_pos(slider_brightness, 88, 28);
+    lv_obj_set_size(slider_brightness, 110, 14);
     lv_slider_set_range(slider_brightness, 10, 100);
     lv_slider_set_value(slider_brightness, 75, LV_ANIM_OFF);
     lv_obj_add_event_cb(slider_brightness, slider_brightness_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    lbl_bright_val = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_bright_val, 345, 6);
+    lbl_bright_val = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_bright_val, 204, 24);
     lv_label_set_text(lbl_bright_val, "75%");
     lv_obj_set_style_text_color(lbl_bright_val, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_bright_val, &lv_font_montserrat_14, 0);
 
-    /* Baris 2: Tema Tampilan */
-    lbl_theme_title = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_theme_title, 10, 40);
-    lv_label_set_text(lbl_theme_title, "Tema Tampilan:");
-    lv_obj_set_style_text_color(lbl_theme_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_theme_title, &lv_font_montserrat_14, 0);
-
-    sw_theme = lv_switch_create(tab_sistem);
-    lv_obj_set_pos(sw_theme, 150, 36);
+    sw_theme = lv_switch_create(card_sistem_disp);
+    lv_obj_set_pos(sw_theme, 252, 22);
     lv_obj_add_event_cb(sw_theme, sw_theme_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    lbl_theme_desc = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_theme_desc, 220, 40);
-    lv_label_set_text(lbl_theme_desc, "Mode Gelap (Dark)");
-    lv_obj_set_style_text_color(lbl_theme_desc, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    lbl_theme_desc = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_theme_desc, 310, 24);
+    lv_obj_set_width(lbl_theme_desc, 120);
+    lv_label_set_text(lbl_theme_desc, "Mode Gelap");
     lv_obj_set_style_text_font(lbl_theme_desc, &lv_font_montserrat_14, 0);
 
-    /* Baris 3: Timeout Layar (Sleep Mode / Hemat Daya Baterai) */
-    lbl_timeout_title = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_timeout_title, 10, 74);
-    lv_label_set_text(lbl_timeout_title, "Timeout Layar:");
-    lv_obj_set_style_text_color(lbl_timeout_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    lbl_timeout_title = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_timeout_title, 6, 56);
+    lv_label_set_text(lbl_timeout_title, "Timeout:");
     lv_obj_set_style_text_font(lbl_timeout_title, &lv_font_montserrat_14, 0);
 
-    dropdown_timeout = lv_dropdown_create(tab_sistem);
-    lv_obj_set_pos(dropdown_timeout, 150, 68);
-    lv_obj_set_size(dropdown_timeout, 290, 30);
+    dropdown_timeout = lv_dropdown_create(card_sistem_disp);
+    lv_obj_set_pos(dropdown_timeout, 75, 52);
+    lv_obj_set_size(dropdown_timeout, 135, 30);
     lv_dropdown_set_options(dropdown_timeout, "Selalu Nyala\n30 Detik\n1 Menit\n2 Menit\n5 Menit");
-    lv_dropdown_set_selected(dropdown_timeout, 2); /* Default 1 Menit */
+    lv_dropdown_set_selected(dropdown_timeout, 2);
     lv_obj_add_event_cb(dropdown_timeout, dropdown_timeout_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    /* Baris 4: Sensitivitas LPCD RFID (Delta Threshold) */
-    lbl_lpcd_title = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_lpcd_title, 10, 106);
+    lbl_lpcd_int_title = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_lpcd_int_title, 218, 56);
+    lv_label_set_text(lbl_lpcd_int_title, "Interval:");
+    lv_obj_set_style_text_font(lbl_lpcd_int_title, &lv_font_montserrat_14, 0);
+
+    dropdown_lpcd_interval = lv_dropdown_create(card_sistem_disp);
+    lv_obj_set_pos(dropdown_lpcd_interval, 280, 52);
+    lv_obj_set_size(dropdown_lpcd_interval, 150, 30);
+    lv_dropdown_set_options(dropdown_lpcd_interval, "150 ms\n250 ms\n300 ms (Opt)\n500 ms (Save)");
+    lv_dropdown_set_selected(dropdown_lpcd_interval, 2);
+    lv_obj_add_event_cb(dropdown_lpcd_interval, dropdown_lpcd_interval_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lbl_lpcd_title = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_lpcd_title, 6, 92);
     lv_label_set_text(lbl_lpcd_title, "Sensitivitas LPCD:");
-    lv_obj_set_style_text_color(lbl_lpcd_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_lpcd_title, &lv_font_montserrat_14, 0);
 
-    dropdown_lpcd_delta = lv_dropdown_create(tab_sistem);
-    lv_obj_set_pos(dropdown_lpcd_delta, 150, 100);
-    lv_obj_set_size(dropdown_lpcd_delta, 290, 30);
+    dropdown_lpcd_delta = lv_dropdown_create(card_sistem_disp);
+    lv_obj_set_pos(dropdown_lpcd_delta, 135, 88);
+    lv_obj_set_size(dropdown_lpcd_delta, 295, 30);
     lv_dropdown_set_options(dropdown_lpcd_delta,
         "Delta 1 (Paling Peka)\n"
         "Delta 2 (Tinggi)\n"
@@ -1168,127 +1148,103 @@ static void build_screen_admin(void)
         "Delta 6 (Sangat Rendah)\n"
         "Delta 7 (Minimal)\n"
         "Delta 8 (Kasar)");
-    uint8_t d_idx = (g_app_settings.lpcd_delta >= 1 && g_app_settings.lpcd_delta <= 8) ? (g_app_settings.lpcd_delta - 1) : 2;
-    lv_dropdown_set_selected(dropdown_lpcd_delta, d_idx);
+    lv_dropdown_set_selected(dropdown_lpcd_delta, 2);
     lv_obj_add_event_cb(dropdown_lpcd_delta, dropdown_lpcd_delta_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    /* Baris 5: Interval Sleep LPCD (ms) */
-    lbl_lpcd_int_title = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_lpcd_int_title, 10, 138);
-    lv_label_set_text(lbl_lpcd_int_title, "Interval Cek LPCD:");
-    lv_obj_set_style_text_color(lbl_lpcd_int_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_lpcd_int_title, &lv_font_montserrat_14, 0);
+    /* Panel 3: Aksi Cepat Hardware */
+    card_sistem_act = lv_obj_create(tab_sistem);
+    lv_obj_set_pos(card_sistem_act, 4, 240);
+    lv_obj_set_size(card_sistem_act, 444, 70);
+    lv_obj_set_style_radius(card_sistem_act, 8, 0);
+    lv_obj_set_style_pad_all(card_sistem_act, 6, 0);
+    lv_obj_remove_flag(card_sistem_act, LV_OBJ_FLAG_SCROLLABLE);
 
-    dropdown_lpcd_interval = lv_dropdown_create(tab_sistem);
-    lv_obj_set_pos(dropdown_lpcd_interval, 150, 132);
-    lv_obj_set_size(dropdown_lpcd_interval, 290, 30);
-    lv_dropdown_set_options(dropdown_lpcd_interval,
-        "150 ms (Sangat Cepat)\n"
-        "250 ms (Cepat)\n"
-        "300 ms (Optimal - Default)\n"
-        "500 ms (Hemat Baterai)");
-    uint8_t int_idx = 2;
-    if (g_app_settings.lpcd_interval_ms == 150) int_idx = 0;
-    else if (g_app_settings.lpcd_interval_ms == 250) int_idx = 1;
-    else if (g_app_settings.lpcd_interval_ms == 300) int_idx = 2;
-    else if (g_app_settings.lpcd_interval_ms == 500) int_idx = 3;
-    lv_dropdown_set_selected(dropdown_lpcd_interval, int_idx);
-    lv_obj_add_event_cb(dropdown_lpcd_interval, dropdown_lpcd_interval_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lbl_sec_act_t = lv_label_create(card_sistem_act);
+    lv_obj_set_pos(lbl_sec_act_t, 6, 2);
+    lv_label_set_text(lbl_sec_act_t, "3. AKSI PERANGKAT");
+    lv_obj_set_style_text_color(lbl_sec_act_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_sec_act_t, &lv_font_montserrat_14, 0);
 
-    /* Baris 6: Tombol Aksi Hardware & Sinkronisasi */
-    btn_test_beep = lv_button_create(tab_sistem);
-    lv_obj_set_pos(btn_test_beep, 10, 168);
+    btn_test_beep = lv_button_create(card_sistem_act);
+    lv_obj_set_pos(btn_test_beep, 6, 22);
     lv_obj_set_size(btn_test_beep, 130, 34);
-    lv_obj_set_style_bg_color(btn_test_beep, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_test_beep, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_test_beep, 1, 0);
-    lv_obj_set_style_radius(btn_test_beep, 8, 0);
+    lv_obj_set_style_radius(btn_test_beep, 6, 0);
     lv_obj_add_event_cb(btn_test_beep, btn_test_beep_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_t_beep = lv_label_create(btn_test_beep);
     lv_obj_center(lbl_t_beep);
     lv_label_set_text(lbl_t_beep, "TEST BEEP");
-    lv_obj_set_style_text_color(lbl_t_beep, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_t_beep, &lv_font_montserrat_14, 0);
 
-    btn_reset_stats = lv_button_create(tab_sistem);
-    lv_obj_set_pos(btn_reset_stats, 155, 168);
+    btn_reset_stats = lv_button_create(card_sistem_act);
+    lv_obj_set_pos(btn_reset_stats, 146, 22);
     lv_obj_set_size(btn_reset_stats, 130, 34);
-    lv_obj_set_style_bg_color(btn_reset_stats, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_reset_stats, lv_color_hex(COLOR_RED_STATUS), 0);
-    lv_obj_set_style_border_width(btn_reset_stats, 1, 0);
-    lv_obj_set_style_radius(btn_reset_stats, 8, 0);
+    lv_obj_set_style_radius(btn_reset_stats, 6, 0);
     lv_obj_add_event_cb(btn_reset_stats, btn_reset_stats_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_t_reset = lv_label_create(btn_reset_stats);
     lv_obj_center(lbl_t_reset);
     lv_label_set_text(lbl_t_reset, "RESET STATS");
-    lv_obj_set_style_text_color(lbl_t_reset, lv_color_hex(COLOR_RED_STATUS), 0);
     lv_obj_set_style_text_font(lbl_t_reset, &lv_font_montserrat_14, 0);
 
-    btn_ntp_sync = lv_button_create(tab_sistem);
-    lv_obj_set_pos(btn_ntp_sync, 300, 168);
-    lv_obj_set_size(btn_ntp_sync, 140, 34);
-    lv_obj_set_style_bg_color(btn_ntp_sync, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_ntp_sync, lv_color_hex(COLOR_GREEN_STATUS), 0);
-    lv_obj_set_style_border_width(btn_ntp_sync, 1, 0);
-    lv_obj_set_style_radius(btn_ntp_sync, 8, 0);
-    lv_obj_add_event_cb(btn_ntp_sync, btn_ntp_sync_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_t_ntp = lv_label_create(btn_ntp_sync);
-    lv_obj_center(lbl_t_ntp);
-    lv_label_set_text(lbl_t_ntp, "SYNC JAM (NTP)");
-    lv_obj_set_style_text_color(lbl_t_ntp, lv_color_hex(COLOR_GREEN_STATUS), 0);
-    lv_obj_set_style_text_font(lbl_t_ntp, &lv_font_montserrat_14, 0);
-
-    /* Baris 7: Label Feedback Aksi */
-    lbl_admin_feedback = lv_label_create(tab_sistem);
-    lv_obj_set_pos(lbl_admin_feedback, 10, 208);
-    lv_obj_set_width(lbl_admin_feedback, 440);
+    lbl_admin_feedback = lv_label_create(card_sistem_act);
+    lv_obj_set_pos(lbl_admin_feedback, 286, 28);
+    lv_obj_set_width(lbl_admin_feedback, 145);
     lv_label_set_text(lbl_admin_feedback, "Status: Siap");
     lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_admin_feedback, &lv_font_montserrat_14, 0);
 
     /* ====================================================================== */
-    /* TAB 2: KONFIGURASI WI-FI                                               */
+    /* TAB 2: JARINGAN (WI-FI SETUP, SINKRONISASI SERVER, CLOCK NTP)          */
     /* ====================================================================== */
-    lv_obj_set_style_pad_all(tab_wifi, 8, 0);
+    lv_obj_set_style_pad_all(tab_jaringan, 8, 0);
 
-    lbl_ssid_t = lv_label_create(tab_wifi);
-    lv_obj_set_pos(lbl_ssid_t, 10, 8);
-    lv_label_set_text(lbl_ssid_t, "SSID Wi-Fi:");
-    lv_obj_set_style_text_color(lbl_ssid_t, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    /* Panel 1: Wi-Fi Setup */
+    card_wifi_setup = lv_obj_create(tab_jaringan);
+    lv_obj_set_pos(card_wifi_setup, 4, 4);
+    lv_obj_set_size(card_wifi_setup, 444, 116);
+    lv_obj_set_style_radius(card_wifi_setup, 8, 0);
+    lv_obj_set_style_pad_all(card_wifi_setup, 6, 0);
+    lv_obj_remove_flag(card_wifi_setup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_sec_wifi_t = lv_label_create(card_wifi_setup);
+    lv_obj_set_pos(lbl_sec_wifi_t, 6, 2);
+    lv_label_set_text(lbl_sec_wifi_t, "1. KONEKSI WI-FI (ESP32-C6)");
+    lv_obj_set_style_text_color(lbl_sec_wifi_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_sec_wifi_t, &lv_font_montserrat_14, 0);
+
+    lbl_ssid_t = lv_label_create(card_wifi_setup);
+    lv_obj_set_pos(lbl_ssid_t, 6, 24);
+    lv_label_set_text(lbl_ssid_t, "SSID:");
     lv_obj_set_style_text_font(lbl_ssid_t, &lv_font_montserrat_14, 0);
 
-    ta_wifi_ssid = lv_textarea_create(tab_wifi);
-    lv_obj_set_pos(ta_wifi_ssid, 100, 4);
-    lv_obj_set_size(ta_wifi_ssid, 180, 32);
+    ta_wifi_ssid = lv_textarea_create(card_wifi_setup);
+    lv_obj_set_pos(ta_wifi_ssid, 78, 20);
+    lv_obj_set_size(ta_wifi_ssid, 195, 30);
     lv_textarea_set_placeholder_text(ta_wifi_ssid, "Nama Wi-Fi");
     lv_textarea_set_one_line(ta_wifi_ssid, true);
     lv_obj_add_event_cb(ta_wifi_ssid, ta_wifi_focus_cb, LV_EVENT_ALL, NULL);
 
-    lbl_pass_t = lv_label_create(tab_wifi);
-    lv_obj_set_pos(lbl_pass_t, 10, 44);
+    lbl_pass_t = lv_label_create(card_wifi_setup);
+    lv_obj_set_pos(lbl_pass_t, 6, 58);
     lv_label_set_text(lbl_pass_t, "Password:");
-    lv_obj_set_style_text_color(lbl_pass_t, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_pass_t, &lv_font_montserrat_14, 0);
 
-    ta_wifi_pass = lv_textarea_create(tab_wifi);
-    lv_obj_set_pos(ta_wifi_pass, 100, 40);
-    lv_obj_set_size(ta_wifi_pass, 180, 32);
+    ta_wifi_pass = lv_textarea_create(card_wifi_setup);
+    lv_obj_set_pos(ta_wifi_pass, 78, 54);
+    lv_obj_set_size(ta_wifi_pass, 195, 30);
     lv_textarea_set_password_mode(ta_wifi_pass, true);
-    lv_textarea_set_placeholder_text(ta_wifi_pass, "Password Wi-Fi");
+    lv_textarea_set_placeholder_text(ta_wifi_pass, "Password");
     lv_textarea_set_one_line(ta_wifi_pass, true);
     lv_obj_add_event_cb(ta_wifi_pass, ta_wifi_focus_cb, LV_EVENT_ALL, NULL);
 
-    /* Tombol Simpan Wi-Fi */
-    btn_save_wifi = lv_button_create(tab_wifi);
-    lv_obj_set_pos(btn_save_wifi, 295, 4);
-    lv_obj_set_size(btn_save_wifi, 145, 68);
+    btn_save_wifi = lv_button_create(card_wifi_setup);
+    lv_obj_set_pos(btn_save_wifi, 282, 20);
+    lv_obj_set_size(btn_save_wifi, 150, 64);
     lv_obj_set_style_bg_color(btn_save_wifi, lv_color_hex(0x064E3B), 0);
     lv_obj_set_style_border_color(btn_save_wifi, lv_color_hex(COLOR_GREEN_STATUS), 0);
     lv_obj_set_style_border_width(btn_save_wifi, 1, 0);
-    lv_obj_set_style_radius(btn_save_wifi, 8, 0);
+    lv_obj_set_style_radius(btn_save_wifi, 6, 0);
     lv_obj_add_event_cb(btn_save_wifi, btn_save_wifi_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_save_btn = lv_label_create(btn_save_wifi);
@@ -1298,60 +1254,197 @@ static void build_screen_admin(void)
     lv_obj_set_style_text_color(lbl_save_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
     lv_obj_set_style_text_font(lbl_save_btn, &lv_font_montserrat_14, 0);
 
-    /* Label Status & Umpan Balik Wi-Fi Real-time */
-    lbl_wifi_feedback = lv_label_create(tab_wifi);
-    lv_obj_set_pos(lbl_wifi_feedback, 10, 80);
-    lv_obj_set_width(lbl_wifi_feedback, 430);
-    lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Belum Terhubung [Mencoba konek...]");
+    lbl_wifi_feedback = lv_label_create(card_wifi_setup);
+    lv_obj_set_pos(lbl_wifi_feedback, 6, 90);
+    lv_obj_set_width(lbl_wifi_feedback, 426);
+    lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Belum Terhubung");
     lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
     lv_obj_set_style_text_font(lbl_wifi_feedback, &lv_font_montserrat_14, 0);
 
-    /* Keyboard Virtual ditempatkan di lv_layer_top() dengan custom 5-baris QWERTY lengkap */
-    kb_wifi = lv_keyboard_create(lv_layer_top());
-    lv_obj_set_size(kb_wifi, 480, 155);
-    lv_obj_align(kb_wifi, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_pad_all(kb_wifi, 2, 0);
-    lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_TEXT_LOWER, (const char **)custom_kb_map_lc, custom_kb_ctrl_lc_map);
-    lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_TEXT_UPPER, (const char **)custom_kb_map_uc, custom_kb_ctrl_uc_map);
-    lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_SPECIAL,    (const char **)custom_kb_map_spec, custom_kb_ctrl_spec_map);
-    lv_obj_add_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(kb_wifi, kb_wifi_event_cb, LV_EVENT_ALL, NULL);
+    /* Panel 2: Sinkronisasi Backend & NTP */
+    card_sync_setup = lv_obj_create(tab_jaringan);
+    lv_obj_set_pos(card_sync_setup, 4, 126);
+    lv_obj_set_size(card_sync_setup, 444, 120);
+    lv_obj_set_style_radius(card_sync_setup, 8, 0);
+    lv_obj_set_style_pad_all(card_sync_setup, 6, 0);
+    lv_obj_remove_flag(card_sync_setup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_sec_sync_t = lv_label_create(card_sync_setup);
+    lv_obj_set_pos(lbl_sec_sync_t, 6, 2);
+    lv_label_set_text(lbl_sec_sync_t, "2. SINKRONISASI SERVER & CLOCK NTP");
+    lv_obj_set_style_text_color(lbl_sec_sync_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_sec_sync_t, &lv_font_montserrat_14, 0);
+
+    lbl_sync_mode_t = lv_label_create(card_sync_setup);
+    lv_obj_set_pos(lbl_sync_mode_t, 6, 24);
+    lv_label_set_text(lbl_sync_mode_t, "Metode Sync:");
+    lv_obj_set_style_text_font(lbl_sync_mode_t, &lv_font_montserrat_14, 0);
+
+    dropdown_sync_mode = lv_dropdown_create(card_sync_setup);
+    lv_obj_set_pos(dropdown_sync_mode, 105, 20);
+    lv_obj_set_size(dropdown_sync_mode, 185, 30);
+    lv_dropdown_set_options(dropdown_sync_mode,
+        "Realtime (Langsung)\n"
+        "Periodik 10 Menit\n"
+        "Periodik 30 Menit\n"
+        "Periodik 1 Jam\n"
+        "Periodik 1 Hari");
+    lv_dropdown_set_selected(dropdown_sync_mode, g_app_settings.sync_mode);
+    lv_obj_add_event_cb(dropdown_sync_mode, dropdown_sync_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lbl_pending_count = lv_label_create(card_sync_setup);
+    lv_obj_set_pos(lbl_pending_count, 300, 24);
+    lv_obj_set_width(lbl_pending_count, 136);
+    lv_label_set_text(lbl_pending_count, "Antrian: 0 data");
+    lv_obj_set_style_text_color(lbl_pending_count, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_pending_count, &lv_font_montserrat_14, 0);
+
+    btn_bulk_sync = lv_button_create(card_sync_setup);
+    lv_obj_set_pos(btn_bulk_sync, 6, 56);
+    lv_obj_set_size(btn_bulk_sync, 205, 34);
+    lv_obj_set_style_bg_color(btn_bulk_sync, lv_color_hex(0x064E3B), 0);
+    lv_obj_set_style_border_color(btn_bulk_sync, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    lv_obj_set_style_border_width(btn_bulk_sync, 1, 0);
+    lv_obj_set_style_radius(btn_bulk_sync, 6, 0);
+    lv_obj_add_event_cb(btn_bulk_sync, btn_bulk_sync_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_bulk_sync_btn = lv_label_create(btn_bulk_sync);
+    lv_obj_center(lbl_bulk_sync_btn);
+    lv_label_set_text(lbl_bulk_sync_btn, LV_SYMBOL_REFRESH " START SYNC MANUAL");
+    lv_obj_set_style_text_color(lbl_bulk_sync_btn, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    lv_obj_set_style_text_font(lbl_bulk_sync_btn, &lv_font_montserrat_14, 0);
+
+    btn_ntp_sync = lv_button_create(card_sync_setup);
+    lv_obj_set_pos(btn_ntp_sync, 218, 56);
+    lv_obj_set_size(btn_ntp_sync, 214, 34);
+    lv_obj_set_style_radius(btn_ntp_sync, 6, 0);
+    lv_obj_add_event_cb(btn_ntp_sync, btn_ntp_sync_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_t_ntp = lv_label_create(btn_ntp_sync);
+    lv_obj_center(lbl_t_ntp);
+    lv_label_set_text(lbl_t_ntp, LV_SYMBOL_IMAGE " SYNC JAM (NTP)");
+    lv_obj_set_style_text_font(lbl_t_ntp, &lv_font_montserrat_14, 0);
+
+    lbl_sync_feedback = lv_label_create(card_sync_setup);
+    lv_obj_set_pos(lbl_sync_feedback, 6, 94);
+    lv_obj_set_width(lbl_sync_feedback, 426);
+    lv_label_set_text(lbl_sync_feedback, "Status: Siap");
+    lv_obj_set_style_text_color(lbl_sync_feedback, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    lv_obj_set_style_text_font(lbl_sync_feedback, &lv_font_montserrat_14, 0);
+
+    /* Keyboard Virtual dibuat secara on-demand saat textarea difokuskan untuk menghemat memori */
+    kb_wifi = NULL;
 
     /* ====================================================================== */
-    /* TAB 3: LOG ABSENSI MICROSD                                             */
+    /* TAB 3: DATA (PENGGUNA KARTU & LOG KEHADIRAN MICROSD)                   */
     /* ====================================================================== */
-    lv_obj_remove_flag(tab_log, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(tab_log, 6, 0);
+    lv_obj_set_style_pad_all(tab_data, 4, 0);
+    lv_obj_remove_flag(tab_data, LV_OBJ_FLAG_SCROLLABLE);
 
-    lbl_log_title = lv_label_create(tab_log);
-    lv_obj_set_pos(lbl_log_title, 10, 6);
-    lv_label_set_text(lbl_log_title, "Riwayat Kehadiran (MicroSD):");
-    lv_obj_set_style_text_color(lbl_log_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    /* Tombol Toggle Antara User Lokal dan Log Absensi */
+    btn_data_switch_users = lv_button_create(tab_data);
+    lv_obj_set_pos(btn_data_switch_users, 6, 2);
+    lv_obj_set_size(btn_data_switch_users, 218, 30);
+    lv_obj_set_style_radius(btn_data_switch_users, 6, 0);
+    lv_obj_add_event_cb(btn_data_switch_users, btn_data_switch_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_data_switch_users = lv_label_create(btn_data_switch_users);
+    lv_obj_center(lbl_data_switch_users);
+    lv_label_set_text(lbl_data_switch_users, "USERS (USERS.CSV)");
+    lv_obj_set_style_text_font(lbl_data_switch_users, &lv_font_montserrat_14, 0);
+
+    btn_data_switch_logs = lv_button_create(tab_data);
+    lv_obj_set_pos(btn_data_switch_logs, 228, 2);
+    lv_obj_set_size(btn_data_switch_logs, 218, 30);
+    lv_obj_set_style_radius(btn_data_switch_logs, 6, 0);
+    lv_obj_add_event_cb(btn_data_switch_logs, btn_data_switch_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_data_switch_logs = lv_label_create(btn_data_switch_logs);
+    lv_obj_center(lbl_data_switch_logs);
+    lv_label_set_text(lbl_data_switch_logs, "LOG (ATTEND.CSV)");
+    lv_obj_set_style_text_font(lbl_data_switch_logs, &lv_font_montserrat_14, 0);
+
+    /* Section 1: Users Table Container */
+    cont_users_section = lv_obj_create(tab_data);
+    lv_obj_set_pos(cont_users_section, 4, 34);
+    lv_obj_set_size(cont_users_section, 444, 204);
+    lv_obj_set_style_pad_all(cont_users_section, 2, 0);
+    lv_obj_set_style_radius(cont_users_section, 6, 0);
+    lv_obj_remove_flag(cont_users_section, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_users_title = lv_label_create(cont_users_section);
+    lv_obj_set_pos(lbl_users_title, 4, 4);
+    lv_label_set_text(lbl_users_title, "User Terdaftar:");
+    lv_obj_set_style_text_font(lbl_users_title, &lv_font_montserrat_14, 0);
+
+    lbl_users_count = lv_label_create(cont_users_section);
+    lv_obj_set_pos(lbl_users_count, 130, 4);
+    lv_label_set_text(lbl_users_count, "Total: 0 user");
+    lv_obj_set_style_text_color(lbl_users_count, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_users_count, &lv_font_montserrat_14, 0);
+
+    btn_refresh_users = lv_button_create(cont_users_section);
+    lv_obj_set_pos(btn_refresh_users, 334, 0);
+    lv_obj_set_size(btn_refresh_users, 106, 26);
+    lv_obj_set_style_radius(btn_refresh_users, 6, 0);
+    lv_obj_add_event_cb(btn_refresh_users, btn_refresh_users_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_refresh_users = lv_label_create(btn_refresh_users);
+    lv_obj_center(lbl_refresh_users);
+    lv_label_set_text(lbl_refresh_users, LV_SYMBOL_REFRESH " REFRESH");
+    lv_obj_set_style_text_color(lbl_refresh_users, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_refresh_users, &lv_font_montserrat_14, 0);
+
+    cont_users_list = lv_obj_create(cont_users_section);
+    lv_obj_set_pos(cont_users_list, 0, 28);
+    lv_obj_set_size(cont_users_list, 442, 172);
+    lv_obj_set_style_radius(cont_users_list, 6, 0);
+    lv_obj_set_style_pad_all(cont_users_list, 2, 0);
+    lv_obj_add_flag(cont_users_list, LV_OBJ_FLAG_SCROLLABLE);
+
+    table_users = lv_table_create(cont_users_list);
+    lv_obj_remove_flag(table_users, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_text_font(table_users, &lv_font_montserrat_14, 0);
+    lv_table_set_column_count(table_users, 4);
+    lv_table_set_column_width(table_users, 0, 34);   /* No */
+    lv_table_set_column_width(table_users, 1, 140);  /* UID Kartu */
+    lv_table_set_column_width(table_users, 2, 160);  /* Nama Karyawan */
+    lv_table_set_column_width(table_users, 3, 90);   /* Jabatan */
+    lv_table_set_cell_value(table_users, 0, 0, "#");
+    lv_table_set_cell_value(table_users, 0, 1, "UID KARTU");
+    lv_table_set_cell_value(table_users, 0, 2, "NAMA KARYAWAN");
+    lv_table_set_cell_value(table_users, 0, 3, "JABATAN");
+
+    /* Section 2: Logs Table Container */
+    cont_logs_section = lv_obj_create(tab_data);
+    lv_obj_set_pos(cont_logs_section, 4, 34);
+    lv_obj_set_size(cont_logs_section, 444, 204);
+    lv_obj_set_style_pad_all(cont_logs_section, 2, 0);
+    lv_obj_set_style_radius(cont_logs_section, 6, 0);
+    lv_obj_remove_flag(cont_logs_section, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(cont_logs_section, LV_OBJ_FLAG_HIDDEN);
+
+    lbl_log_title = lv_label_create(cont_logs_section);
+    lv_obj_set_pos(lbl_log_title, 4, 4);
+    lv_label_set_text(lbl_log_title, "Riwayat Kehadiran Terakhir:");
     lv_obj_set_style_text_font(lbl_log_title, &lv_font_montserrat_14, 0);
 
-    btn_refresh_log = lv_button_create(tab_log);
-    lv_obj_set_pos(btn_refresh_log, 310, 2);
-    lv_obj_set_size(btn_refresh_log, 130, 28);
-    lv_obj_set_style_bg_color(btn_refresh_log, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_refresh_log, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_refresh_log, 1, 0);
+    btn_refresh_log = lv_button_create(cont_logs_section);
+    lv_obj_set_pos(btn_refresh_log, 334, 0);
+    lv_obj_set_size(btn_refresh_log, 106, 26);
     lv_obj_set_style_radius(btn_refresh_log, 6, 0);
     lv_obj_add_event_cb(btn_refresh_log, btn_refresh_log_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_refresh_log = lv_label_create(btn_refresh_log);
     lv_obj_center(lbl_refresh_log);
-    lv_label_set_text(lbl_refresh_log, "REFRESH LOG");
+    lv_label_set_text(lbl_refresh_log, LV_SYMBOL_REFRESH " REFRESH");
     lv_obj_set_style_text_color(lbl_refresh_log, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_refresh_log, &lv_font_montserrat_14, 0);
 
-    /* Kotak log tabel: scrollable hanya pada container ini (1 Scroll Control) */
-    cont_log_list = lv_obj_create(tab_log);
-    lv_obj_set_pos(cont_log_list, 10, 36);
-    lv_obj_set_size(cont_log_list, 440, 194);
-    lv_obj_set_style_bg_color(cont_log_list, lv_color_hex(0x060E1A), 0);
-    lv_obj_set_style_border_color(cont_log_list, lv_color_hex(COLOR_DARK_BORDER), 0);
-    lv_obj_set_style_border_width(cont_log_list, 1, 0);
-    lv_obj_set_style_radius(cont_log_list, 8, 0);
+    cont_log_list = lv_obj_create(cont_logs_section);
+    lv_obj_set_pos(cont_log_list, 0, 28);
+    lv_obj_set_size(cont_log_list, 442, 172);
+    lv_obj_set_style_radius(cont_log_list, 6, 0);
     lv_obj_set_style_pad_all(cont_log_list, 2, 0);
     lv_obj_add_flag(cont_log_list, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -1359,26 +1452,25 @@ static void build_screen_admin(void)
     lv_obj_remove_flag(table_log, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_text_font(table_log, &lv_font_montserrat_14, 0);
     lv_table_set_column_count(table_log, 4);
-    lv_table_set_column_width(table_log, 0, 36);   /* No */
+    lv_table_set_column_width(table_log, 0, 34);   /* No */
     lv_table_set_column_width(table_log, 1, 140);  /* Waktu */
-    lv_table_set_column_width(table_log, 2, 130);  /* UID Kartu */
+    lv_table_set_column_width(table_log, 2, 140);  /* UID Kartu */
     lv_table_set_column_width(table_log, 3, 110);  /* Status */
-
     lv_table_set_cell_value(table_log, 0, 0, "#");
     lv_table_set_cell_value(table_log, 0, 1, "WAKTU");
     lv_table_set_cell_value(table_log, 0, 2, "UID KARTU");
     lv_table_set_cell_value(table_log, 0, 3, "STATUS");
 
     /* ====================================================================== */
-    /* TAB 4: TEST DEVICE (DIAGNOSTIK HARDWARE LENGKAP)                       */
+    /* TAB 4: DIAGNOSTIK (UJI HARDWARE & INFORMASI PERANGKAT)                 */
     /* ====================================================================== */
-    lv_obj_remove_flag(tab_test, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(tab_test, 6, 0);
+    lv_obj_set_style_pad_all(tab_diagnostik, 4, 0);
+    lv_obj_remove_flag(tab_diagnostik, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Tombol Uji Semua (Master Test) */
-    btn_diag_all = lv_button_create(tab_test);
-    lv_obj_set_pos(btn_diag_all, 6, 4);
-    lv_obj_set_size(btn_diag_all, 140, 32);
+    btn_diag_all = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_diag_all, 4, 2);
+    lv_obj_set_size(btn_diag_all, 134, 30);
     lv_obj_set_style_bg_color(btn_diag_all, lv_color_hex(0x0E7490), 0);
     lv_obj_set_style_border_color(btn_diag_all, lv_color_hex(COLOR_CYAN_ACCENT), 0);
     lv_obj_set_style_border_width(btn_diag_all, 1, 0);
@@ -1391,291 +1483,169 @@ static void build_screen_admin(void)
     lv_obj_set_style_text_color(lbl_diag_all_t, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(lbl_diag_all_t, &lv_font_montserrat_14, 0);
 
-    /* Tombol 1: Test Buzzer */
-    btn_diag_beep = lv_button_create(tab_test);
-    lv_obj_set_pos(btn_diag_beep, 6, 40);
-    lv_obj_set_size(btn_diag_beep, 140, 30);
-    lv_obj_set_style_bg_color(btn_diag_beep, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_diag_beep, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_diag_beep, 1, 0);
+    btn_diag_beep = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_diag_beep, 4, 34);
+    lv_obj_set_size(btn_diag_beep, 134, 26);
     lv_obj_set_style_radius(btn_diag_beep, 6, 0);
     lv_obj_add_event_cb(btn_diag_beep, btn_diag_beep_cb, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t * lbl_db = lv_label_create(btn_diag_beep);
     lv_obj_center(lbl_db);
-    lv_label_set_text(lbl_db, "1. Test Buzzer");
+    lv_label_set_text(lbl_db, "1. Buzzer");
     lv_obj_set_style_text_color(lbl_db, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_db, &lv_font_montserrat_14, 0);
 
-    /* Tombol 2: Test RFID */
-    btn_diag_rfid = lv_button_create(tab_test);
-    lv_obj_set_pos(btn_diag_rfid, 6, 74);
-    lv_obj_set_size(btn_diag_rfid, 140, 30);
-    lv_obj_set_style_bg_color(btn_diag_rfid, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_diag_rfid, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_diag_rfid, 1, 0);
+    btn_diag_rfid = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_diag_rfid, 4, 62);
+    lv_obj_set_size(btn_diag_rfid, 134, 26);
     lv_obj_set_style_radius(btn_diag_rfid, 6, 0);
     lv_obj_add_event_cb(btn_diag_rfid, btn_diag_rfid_cb, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t * lbl_dr = lv_label_create(btn_diag_rfid);
     lv_obj_center(lbl_dr);
-    lv_label_set_text(lbl_dr, "2. Test RFID");
+    lv_label_set_text(lbl_dr, "2. RFID");
     lv_obj_set_style_text_color(lbl_dr, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_dr, &lv_font_montserrat_14, 0);
 
-    /* Tombol 3: Test MicroSD */
-    btn_diag_sd = lv_button_create(tab_test);
-    lv_obj_set_pos(btn_diag_sd, 6, 108);
-    lv_obj_set_size(btn_diag_sd, 140, 30);
-    lv_obj_set_style_bg_color(btn_diag_sd, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_diag_sd, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_diag_sd, 1, 0);
+    btn_diag_sd = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_diag_sd, 4, 90);
+    lv_obj_set_size(btn_diag_sd, 134, 26);
     lv_obj_set_style_radius(btn_diag_sd, 6, 0);
     lv_obj_add_event_cb(btn_diag_sd, btn_diag_sd_cb, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t * lbl_ds = lv_label_create(btn_diag_sd);
     lv_obj_center(lbl_ds);
-    lv_label_set_text(lbl_ds, "3. Test MicroSD");
+    lv_label_set_text(lbl_ds, "3. MicroSD");
     lv_obj_set_style_text_color(lbl_ds, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_ds, &lv_font_montserrat_14, 0);
 
-    /* Tombol 4: Test Wi-Fi */
-    btn_diag_wifi = lv_button_create(tab_test);
-    lv_obj_set_pos(btn_diag_wifi, 6, 142);
-    lv_obj_set_size(btn_diag_wifi, 140, 30);
-    lv_obj_set_style_bg_color(btn_diag_wifi, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_diag_wifi, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_diag_wifi, 1, 0);
+    btn_diag_wifi = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_diag_wifi, 4, 118);
+    lv_obj_set_size(btn_diag_wifi, 134, 26);
     lv_obj_set_style_radius(btn_diag_wifi, 6, 0);
     lv_obj_add_event_cb(btn_diag_wifi, btn_diag_wifi_cb, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t * lbl_dw = lv_label_create(btn_diag_wifi);
     lv_obj_center(lbl_dw);
-    lv_label_set_text(lbl_dw, "4. Test Wi-Fi");
+    lv_label_set_text(lbl_dw, "4. Wi-Fi");
     lv_obj_set_style_text_color(lbl_dw, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_dw, &lv_font_montserrat_14, 0);
 
-    /* Tombol 5: Test RTC */
-    btn_diag_rtc = lv_button_create(tab_test);
-    lv_obj_set_pos(btn_diag_rtc, 6, 176);
-    lv_obj_set_size(btn_diag_rtc, 140, 30);
-    lv_obj_set_style_bg_color(btn_diag_rtc, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_diag_rtc, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_diag_rtc, 1, 0);
+    btn_diag_rtc = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_diag_rtc, 4, 146);
+    lv_obj_set_size(btn_diag_rtc, 134, 26);
     lv_obj_set_style_radius(btn_diag_rtc, 6, 0);
     lv_obj_add_event_cb(btn_diag_rtc, btn_diag_rtc_cb, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t * lbl_dr_rtc = lv_label_create(btn_diag_rtc);
     lv_obj_center(lbl_dr_rtc);
-    lv_label_set_text(lbl_dr_rtc, "5. Test RTC");
+    lv_label_set_text(lbl_dr_rtc, "5. RTC");
     lv_obj_set_style_text_color(lbl_dr_rtc, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_dr_rtc, &lv_font_montserrat_14, 0);
 
-    /* Kotak Hasil Diagnostik (Kanan) */
-    cont_diag_box = lv_obj_create(tab_test);
-    lv_obj_set_pos(cont_diag_box, 155, 4);
-    lv_obj_set_size(cont_diag_box, 295, 202);
-    lv_obj_set_style_bg_color(cont_diag_box, lv_color_hex(0x060E1A), 0);
-    lv_obj_set_style_border_color(cont_diag_box, lv_color_hex(COLOR_DARK_BORDER), 0);
-    lv_obj_set_style_border_width(cont_diag_box, 1, 0);
+    btn_refresh_info = lv_button_create(tab_diagnostik);
+    lv_obj_set_pos(btn_refresh_info, 4, 174);
+    lv_obj_set_size(btn_refresh_info, 134, 28);
+    lv_obj_set_style_radius(btn_refresh_info, 6, 0);
+    lv_obj_add_event_cb(btn_refresh_info, btn_refresh_info_cb, LV_EVENT_CLICKED, NULL);
+    lbl_refresh_info = lv_label_create(btn_refresh_info);
+    lv_obj_center(lbl_refresh_info);
+    lv_label_set_text(lbl_refresh_info, LV_SYMBOL_REFRESH " INFO DEV");
+    lv_obj_set_style_text_color(lbl_refresh_info, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_refresh_info, &lv_font_montserrat_14, 0);
+
+    /* Kotak Hasil Diagnostik & Informasi Perangkat */
+    cont_diag_box = lv_obj_create(tab_diagnostik);
+    lv_obj_set_pos(cont_diag_box, 142, 2);
+    lv_obj_set_size(cont_diag_box, 306, 234);
     lv_obj_set_style_radius(cont_diag_box, 8, 0);
     lv_obj_set_style_pad_all(cont_diag_box, 6, 0);
+    lv_obj_add_flag(cont_diag_box, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_diag_title = lv_label_create(cont_diag_box);
     lv_obj_set_pos(lbl_diag_title, 4, 2);
-    lv_label_set_text(lbl_diag_title, "HASIL DIAGNOSTIK:");
+    lv_label_set_text(lbl_diag_title, "HASIL PENGUJIAN HARDWARE:");
     lv_obj_set_style_text_color(lbl_diag_title, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_diag_title, &lv_font_montserrat_14, 0);
 
     lbl_diag_summary = lv_label_create(cont_diag_box);
-    lv_obj_set_pos(lbl_diag_summary, 4, 24);
-    lv_obj_set_width(lbl_diag_summary, 275);
+    lv_obj_set_pos(lbl_diag_summary, 4, 22);
+    lv_obj_set_width(lbl_diag_summary, 280);
     lv_label_set_long_mode(lbl_diag_summary, LV_LABEL_LONG_MODE_WRAP);
-    lv_label_set_text(lbl_diag_summary, "Silakan pilih salah satu tes atau klik 'UJI SEMUA'.");
-    lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+    lv_label_set_text(lbl_diag_summary, "Silakan pilih salah satu tes atau 'UJI SEMUA'.");
     lv_obj_set_style_text_font(lbl_diag_summary, &lv_font_montserrat_14, 0);
 
     lbl_diag_detail = lv_label_create(cont_diag_box);
-    lv_obj_set_pos(lbl_diag_detail, 4, 60);
-    lv_obj_set_width(lbl_diag_detail, 275);
+    lv_obj_set_pos(lbl_diag_detail, 4, 52);
+    lv_obj_set_width(lbl_diag_detail, 280);
     lv_label_set_long_mode(lbl_diag_detail, LV_LABEL_LONG_MODE_WRAP);
     lv_label_set_text(lbl_diag_detail, "Pengujian memeriksa respon hardware, konektivitas kabel, register chip, dan file system.");
-    lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
     lv_obj_set_style_text_font(lbl_diag_detail, &lv_font_montserrat_14, 0);
 
-    /* ====================================================================== */
-    /* TAB: PENGGUNA TERDAFTAR (USERS.CSV DI MICROSD)                         */
-    /* ====================================================================== */
-    lv_obj_remove_flag(tab_users, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(tab_users, 6, 0);
-
-    lbl_users_title = lv_label_create(tab_users);
-    lv_obj_set_pos(lbl_users_title, 10, 6);
-    lv_label_set_text(lbl_users_title, "Akses Lokal (USERS.CSV):");
-    lv_obj_set_style_text_color(lbl_users_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_users_title, &lv_font_montserrat_14, 0);
-
-    lbl_users_count = lv_label_create(tab_users);
-    lv_obj_set_pos(lbl_users_count, 220, 6);
-    lv_label_set_text(lbl_users_count, "Total: 0 user");
-    lv_obj_set_style_text_color(lbl_users_count, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    lv_obj_set_style_text_font(lbl_users_count, &lv_font_montserrat_14, 0);
-
-    btn_refresh_users = lv_button_create(tab_users);
-    lv_obj_set_pos(btn_refresh_users, 330, 2);
-    lv_obj_set_size(btn_refresh_users, 110, 28);
-    lv_obj_set_style_bg_color(btn_refresh_users, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_refresh_users, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_refresh_users, 1, 0);
-    lv_obj_set_style_radius(btn_refresh_users, 6, 0);
-    lv_obj_add_event_cb(btn_refresh_users, btn_refresh_users_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_refresh_users = lv_label_create(btn_refresh_users);
-    lv_obj_center(lbl_refresh_users);
-    lv_label_set_text(lbl_refresh_users, LV_SYMBOL_REFRESH " REFRESH");
-    lv_obj_set_style_text_color(lbl_refresh_users, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    lv_obj_set_style_text_font(lbl_refresh_users, &lv_font_montserrat_14, 0);
-
-    cont_users_list = lv_obj_create(tab_users);
-    lv_obj_set_pos(cont_users_list, 10, 36);
-    lv_obj_set_size(cont_users_list, 440, 194);
-    lv_obj_set_style_bg_color(cont_users_list, lv_color_hex(0x060E1A), 0);
-    lv_obj_set_style_border_color(cont_users_list, lv_color_hex(COLOR_DARK_BORDER), 0);
-    lv_obj_set_style_border_width(cont_users_list, 1, 0);
-    lv_obj_set_style_radius(cont_users_list, 8, 0);
-    lv_obj_set_style_pad_all(cont_users_list, 2, 0);
-    lv_obj_add_flag(cont_users_list, LV_OBJ_FLAG_SCROLLABLE);
-
-    table_users = lv_table_create(cont_users_list);
-    lv_obj_remove_flag(table_users, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_text_font(table_users, &lv_font_montserrat_14, 0);
-    lv_table_set_column_count(table_users, 4);
-    lv_table_set_column_width(table_users, 0, 34);   /* No */
-    lv_table_set_column_width(table_users, 1, 140);  /* UID Kartu */
-    lv_table_set_column_width(table_users, 2, 160);  /* Nama Karyawan */
-    lv_table_set_column_width(table_users, 3, 90);   /* Jabatan */
-
-    lv_table_set_cell_value(table_users, 0, 0, "#");
-    lv_table_set_cell_value(table_users, 0, 1, "UID KARTU");
-    lv_table_set_cell_value(table_users, 0, 2, "NAMA KARYAWAN");
-    lv_table_set_cell_value(table_users, 0, 3, "JABATAN");
-
-    /* ====================================================================== */
-    /* TAB: INFORMASI & DIAGNOSTIK DEVICE (WI-FI 6, RFID, FIRMWARE)           */
-    /* ====================================================================== */
-    lv_obj_remove_flag(tab_info, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(tab_info, 6, 0);
-
-    lbl_info_title = lv_label_create(tab_info);
-    lv_obj_set_pos(lbl_info_title, 10, 6);
-    lv_label_set_text(lbl_info_title, "Informasi Perangkat & Jaringan:");
-    lv_obj_set_style_text_color(lbl_info_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_info_title, &lv_font_montserrat_14, 0);
-
-    btn_refresh_info = lv_button_create(tab_info);
-    lv_obj_set_pos(btn_refresh_info, 330, 2);
-    lv_obj_set_size(btn_refresh_info, 110, 28);
-    lv_obj_set_style_bg_color(btn_refresh_info, lv_color_hex(COLOR_DARK_CARD), 0);
-    lv_obj_set_style_border_color(btn_refresh_info, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    lv_obj_set_style_border_width(btn_refresh_info, 1, 0);
-    lv_obj_set_style_radius(btn_refresh_info, 6, 0);
-    lv_obj_add_event_cb(btn_refresh_info, btn_refresh_info_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_refresh_info = lv_label_create(btn_refresh_info);
-    lv_obj_center(lbl_refresh_info);
-    lv_label_set_text(lbl_refresh_info, LV_SYMBOL_REFRESH " REFRESH");
-    lv_obj_set_style_text_color(lbl_refresh_info, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    lv_obj_set_style_text_font(lbl_refresh_info, &lv_font_montserrat_14, 0);
-
-    cont_info_box = lv_obj_create(tab_info);
-    lv_obj_set_pos(cont_info_box, 10, 36);
-    lv_obj_set_size(cont_info_box, 440, 194);
-    lv_obj_set_style_bg_color(cont_info_box, lv_color_hex(0x060E1A), 0);
-    lv_obj_set_style_border_color(cont_info_box, lv_color_hex(COLOR_DARK_BORDER), 0);
-    lv_obj_set_style_border_width(cont_info_box, 1, 0);
-    lv_obj_set_style_radius(cont_info_box, 8, 0);
-    lv_obj_set_style_pad_all(cont_info_box, 8, 0);
-    lv_obj_add_flag(cont_info_box, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Section 1: Wi-Fi */
-    lbl_info_wifi_sec = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_wifi_sec, 4, 4);
+    /* Info Device Sections */
+    lbl_info_wifi_sec = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_wifi_sec, 4, 100);
     lv_label_set_text(lbl_info_wifi_sec, "[1] KONEKSI WI-FI & JARINGAN");
     lv_obj_set_style_text_color(lbl_info_wifi_sec, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_info_wifi_sec, &lv_font_montserrat_14, 0);
 
-    lbl_info_wifi_proto = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_wifi_proto, 8, 24);
+    lbl_info_wifi_proto = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_wifi_proto, 6, 120);
     lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Memeriksa jaringan...");
     lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_GREEN_STATUS), 0);
     lv_obj_set_style_text_font(lbl_info_wifi_proto, &lv_font_montserrat_14, 0);
 
-    lbl_info_wifi_status = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_wifi_status, 8, 42);
+    lbl_info_wifi_status = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_wifi_status, 6, 138);
     lv_label_set_text(lbl_info_wifi_status, "- Status: Belum Terhubung");
-    lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_info_wifi_status, &lv_font_montserrat_14, 0);
 
-    lbl_info_wifi_ssid = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_wifi_ssid, 8, 60);
+    lbl_info_wifi_ssid = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_wifi_ssid, 6, 156);
     lv_label_set_text(lbl_info_wifi_ssid, "- SSID: - | IP: -");
-    lv_obj_set_style_text_color(lbl_info_wifi_ssid, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
     lv_obj_set_style_text_font(lbl_info_wifi_ssid, &lv_font_montserrat_14, 0);
 
-    lbl_info_wifi_ip_mac = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_wifi_ip_mac, 8, 78);
+    lbl_info_wifi_ip_mac = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_wifi_ip_mac, 6, 174);
     lv_label_set_text(lbl_info_wifi_ip_mac, "- MAC: -");
-    lv_obj_set_style_text_color(lbl_info_wifi_ip_mac, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
     lv_obj_set_style_text_font(lbl_info_wifi_ip_mac, &lv_font_montserrat_14, 0);
 
-    /* Section 2: RFID Reader */
-    lbl_info_rfid_sec = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_rfid_sec, 4, 102);
+    lbl_info_rfid_sec = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_rfid_sec, 4, 198);
     lv_label_set_text(lbl_info_rfid_sec, "[2] RFID READER CLRC66303HNY");
     lv_obj_set_style_text_color(lbl_info_rfid_sec, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_info_rfid_sec, &lv_font_montserrat_14, 0);
 
-    lbl_info_rfid_chip = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_rfid_chip, 8, 122);
+    lbl_info_rfid_chip = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_rfid_chip, 6, 218);
     lv_label_set_text(lbl_info_rfid_chip, "- Chip IC: NXP CLRC66303HNY (Plus Rev 3, 0x1A)");
-    lv_obj_set_style_text_color(lbl_info_rfid_chip, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_info_rfid_chip, &lv_font_montserrat_14, 0);
 
-    lbl_info_rfid_lpcd = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_rfid_lpcd, 8, 140);
+    lbl_info_rfid_lpcd = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_rfid_lpcd, 6, 236);
     lv_label_set_text(lbl_info_rfid_lpcd, "- Mode LPCD: Aktif (PA15 Wakeup, Delta: 3, 300 ms)");
     lv_obj_set_style_text_color(lbl_info_rfid_lpcd, lv_color_hex(COLOR_GREEN_STATUS), 0);
     lv_obj_set_style_text_font(lbl_info_rfid_lpcd, &lv_font_montserrat_14, 0);
 
-    lbl_info_rfid_proto = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_rfid_proto, 8, 158);
+    lbl_info_rfid_proto = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_rfid_proto, 6, 254);
     lv_label_set_text(lbl_info_rfid_proto, "- Protokol: ISO14443A (Mifare/e-KTP), ISO14443B, ISO15693");
-    lv_obj_set_style_text_color(lbl_info_rfid_proto, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
     lv_obj_set_style_text_font(lbl_info_rfid_proto, &lv_font_montserrat_14, 0);
 
-    /* Section 3: Sistem & Firmware */
-    lbl_info_sys_sec = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_sys_sec, 4, 182);
-    lv_label_set_text(lbl_info_sys_sec, "[3] FIRMWARE & SISTEM HARDWARE");
+    lbl_info_sys_sec = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_sys_sec, 4, 278);
+    lv_label_set_text(lbl_info_sys_sec, "[3] FIRMWARE & STATUS MEMORI");
     lv_obj_set_style_text_color(lbl_info_sys_sec, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_info_sys_sec, &lv_font_montserrat_14, 0);
 
-    lbl_info_fw_ver = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_fw_ver, 8, 202);
+    lbl_info_fw_ver = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_fw_ver, 6, 298);
     lv_label_set_text(lbl_info_fw_ver, "- Versi Firmware: v2.5.0-LPCD-AX (Build: 2026-10-26)");
-    lv_obj_set_style_text_color(lbl_info_fw_ver, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_info_fw_ver, &lv_font_montserrat_14, 0);
 
-    lbl_info_mcu_info = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_mcu_info, 8, 220);
-    lv_label_set_text(lbl_info_mcu_info, "- MCU: STM32F405RGT6 (168MHz) | Co-MCU: ESP32-C6 RISC-V");
-    lv_obj_set_style_text_color(lbl_info_mcu_info, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    lbl_info_mcu_info = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_mcu_info, 6, 316);
+    lv_label_set_text(lbl_info_mcu_info, "- MCU: STM32F405 (168MHz) | Co-MCU: ESP32-C6");
     lv_obj_set_style_text_font(lbl_info_mcu_info, &lv_font_montserrat_14, 0);
 
-    lbl_info_mem_info = lv_label_create(cont_info_box);
-    lv_obj_set_pos(lbl_info_mem_info, 8, 238);
-    lv_label_set_text(lbl_info_mem_info, "- Penyimpanan: MicroSD FatFS | Config: Flash Sector 11");
-    lv_obj_set_style_text_color(lbl_info_mem_info, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    lbl_info_mem_info = lv_label_create(cont_diag_box);
+    lv_obj_set_pos(lbl_info_mem_info, 6, 334);
+    lv_label_set_text(lbl_info_mem_info, "- Memori: CCMRAM 64KB (OK) | SRAM 128KB (OK)");
     lv_obj_set_style_text_font(lbl_info_mem_info, &lv_font_montserrat_14, 0);
 }
 
@@ -2330,7 +2300,14 @@ static void apply_theme(bool is_dark)
         update_admin_tab_styles(is_dark);
     }
 
-    /* Tab Device Elements */
+    /* ====================================================================== */
+    /* TAB 1: SISTEM (CARD 1, CARD 2, CARD 3)                                 */
+    /* ====================================================================== */
+    if (card_sistem_dev) {
+        lv_obj_set_style_bg_color(card_sistem_dev, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(card_sistem_dev, lv_color_hex(c_border), 0);
+    }
+    if (lbl_sec_dev_t) lv_obj_set_style_text_color(lbl_sec_dev_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (lbl_dev_code_t) lv_obj_set_style_text_color(lbl_dev_code_t, lv_color_hex(c_text_pri), 0);
     if (lbl_dev_name_t) lv_obj_set_style_text_color(lbl_dev_name_t, lv_color_hex(c_text_pri), 0);
     if (lbl_admin_pin_t) lv_obj_set_style_text_color(lbl_admin_pin_t, lv_color_hex(c_text_pri), 0);
@@ -2350,42 +2327,59 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_text_color(ta_admin_pin, lv_color_hex(c_text_pri), 0);
     }
 
-    /* Tab Sinkron Elements */
-    if (lbl_sync_mode_t) lv_obj_set_style_text_color(lbl_sync_mode_t, lv_color_hex(c_text_pri), 0);
-    if (dropdown_sync_mode) {
-        lv_obj_set_style_bg_color(dropdown_sync_mode, lv_color_hex(c_btn_bg), 0);
-        lv_obj_set_style_border_color(dropdown_sync_mode, lv_color_hex(c_border), 0);
-        lv_obj_set_style_text_color(dropdown_sync_mode, lv_color_hex(c_text_pri), 0);
+    if (card_sistem_disp) {
+        lv_obj_set_style_bg_color(card_sistem_disp, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(card_sistem_disp, lv_color_hex(c_border), 0);
     }
-    if (lbl_pending_count) lv_obj_set_style_text_color(lbl_pending_count, lv_color_hex(COLOR_CYAN_TEXT), 0);
-
-    /* Tab Sistem Elements */
+    if (lbl_sec_disp_t) lv_obj_set_style_text_color(lbl_sec_disp_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (lbl_bright_title) lv_obj_set_style_text_color(lbl_bright_title, lv_color_hex(c_text_pri), 0);
-    if (lbl_theme_title) lv_obj_set_style_text_color(lbl_theme_title, lv_color_hex(c_text_pri), 0);
     if (lbl_timeout_title) lv_obj_set_style_text_color(lbl_timeout_title, lv_color_hex(c_text_pri), 0);
+    if (lbl_lpcd_title) lv_obj_set_style_text_color(lbl_lpcd_title, lv_color_hex(c_text_pri), 0);
+    if (lbl_lpcd_int_title) lv_obj_set_style_text_color(lbl_lpcd_int_title, lv_color_hex(c_text_pri), 0);
+    if (lbl_theme_desc) {
+        lv_label_set_text(lbl_theme_desc, is_dark ? "Mode Gelap (Dark)" : "Mode Terang (Light)");
+        lv_obj_set_style_text_color(lbl_theme_desc, lv_color_hex(c_text_mut), 0);
+    }
     if (dropdown_timeout) {
         lv_obj_set_style_bg_color(dropdown_timeout, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(dropdown_timeout, lv_color_hex(c_border), 0);
         lv_obj_set_style_text_color(dropdown_timeout, lv_color_hex(c_text_pri), 0);
     }
-    if (lbl_theme_desc) {
-        lv_label_set_text(lbl_theme_desc, is_dark ? "Mode Gelap (Dark)" : "Mode Terang (Light)");
-        lv_obj_set_style_text_color(lbl_theme_desc, lv_color_hex(c_text_mut), 0);
+    if (dropdown_lpcd_delta) {
+        lv_obj_set_style_bg_color(dropdown_lpcd_delta, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(dropdown_lpcd_delta, lv_color_hex(c_border), 0);
+        lv_obj_set_style_text_color(dropdown_lpcd_delta, lv_color_hex(c_text_pri), 0);
     }
+    if (dropdown_lpcd_interval) {
+        lv_obj_set_style_bg_color(dropdown_lpcd_interval, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(dropdown_lpcd_interval, lv_color_hex(c_border), 0);
+        lv_obj_set_style_text_color(dropdown_lpcd_interval, lv_color_hex(c_text_pri), 0);
+    }
+
+    if (card_sistem_act) {
+        lv_obj_set_style_bg_color(card_sistem_act, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(card_sistem_act, lv_color_hex(c_border), 0);
+    }
+    if (lbl_sec_act_t) lv_obj_set_style_text_color(lbl_sec_act_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (btn_test_beep) {
         lv_obj_set_style_bg_color(btn_test_beep, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(btn_test_beep, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+        if (lbl_t_beep) lv_obj_set_style_text_color(lbl_t_beep, lv_color_hex(is_dark ? COLOR_CYAN_TEXT : 0x0284C7), 0);
     }
     if (btn_reset_stats) {
         lv_obj_set_style_bg_color(btn_reset_stats, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(btn_reset_stats, lv_color_hex(COLOR_RED_STATUS), 0);
-    }
-    if (btn_ntp_sync) {
-        lv_obj_set_style_bg_color(btn_ntp_sync, lv_color_hex(c_btn_bg), 0);
-        lv_obj_set_style_border_color(btn_ntp_sync, lv_color_hex(COLOR_GREEN_STATUS), 0);
+        if (lbl_t_reset) lv_obj_set_style_text_color(lbl_t_reset, lv_color_hex(COLOR_RED_STATUS), 0);
     }
 
-    /* Tab 2 Elements */
+    /* ====================================================================== */
+    /* TAB 2: JARINGAN (WI-FI & SINKRONISASI)                                 */
+    /* ====================================================================== */
+    if (card_wifi_setup) {
+        lv_obj_set_style_bg_color(card_wifi_setup, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(card_wifi_setup, lv_color_hex(c_border), 0);
+    }
+    if (lbl_sec_wifi_t) lv_obj_set_style_text_color(lbl_sec_wifi_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (lbl_ssid_t) lv_obj_set_style_text_color(lbl_ssid_t, lv_color_hex(c_text_pri), 0);
     if (lbl_pass_t) lv_obj_set_style_text_color(lbl_pass_t, lv_color_hex(c_text_pri), 0);
     if (ta_wifi_ssid) {
@@ -2399,79 +2393,132 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_text_color(ta_wifi_pass, lv_color_hex(c_text_pri), 0);
     }
 
-    /* Tab 3 Elements (Log Absensi) */
+    if (card_sync_setup) {
+        lv_obj_set_style_bg_color(card_sync_setup, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(card_sync_setup, lv_color_hex(c_border), 0);
+    }
+    if (lbl_sec_sync_t) lv_obj_set_style_text_color(lbl_sec_sync_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    if (lbl_sync_mode_t) lv_obj_set_style_text_color(lbl_sync_mode_t, lv_color_hex(c_text_pri), 0);
+    if (dropdown_sync_mode) {
+        lv_obj_set_style_bg_color(dropdown_sync_mode, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(dropdown_sync_mode, lv_color_hex(c_border), 0);
+        lv_obj_set_style_text_color(dropdown_sync_mode, lv_color_hex(c_text_pri), 0);
+    }
+    if (btn_ntp_sync) {
+        lv_obj_set_style_bg_color(btn_ntp_sync, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_ntp_sync, lv_color_hex(is_dark ? COLOR_CYAN_ACCENT : c_border), 0);
+        if (lbl_t_ntp) lv_obj_set_style_text_color(lbl_t_ntp, lv_color_hex(c_text_pri), 0);
+    }
+
+    /* ====================================================================== */
+    /* TAB 3: DATA MICROSD (USERS & LOGS DENGAN SWITCH)                       */
+    /* ====================================================================== */
+    bool showing_users = (cont_users_section && !lv_obj_has_flag(cont_users_section, LV_OBJ_FLAG_HIDDEN));
+    if (btn_data_switch_users && btn_data_switch_logs) {
+        uint32_t active_bg   = COLOR_CYAN_ACCENT;
+        uint32_t inact_bg    = is_dark ? COLOR_DARK_CARD : COLOR_LIGHT_CARD;
+        uint32_t inact_txt   = is_dark ? COLOR_DARK_TEXT_MUTED : COLOR_LIGHT_TEXT_MUTED;
+        uint32_t inact_bdr   = is_dark ? COLOR_DARK_BORDER : COLOR_LIGHT_BORDER;
+
+        lv_obj_set_style_bg_color(btn_data_switch_users, lv_color_hex(showing_users ? active_bg : inact_bg), 0);
+        lv_obj_set_style_border_color(btn_data_switch_users, lv_color_hex(showing_users ? active_bg : inact_bdr), 0);
+        if (lbl_data_switch_users) lv_obj_set_style_text_color(lbl_data_switch_users, lv_color_hex(showing_users ? 0xFFFFFF : inact_txt), 0);
+
+        lv_obj_set_style_bg_color(btn_data_switch_logs, lv_color_hex(!showing_users ? active_bg : inact_bg), 0);
+        lv_obj_set_style_border_color(btn_data_switch_logs, lv_color_hex(!showing_users ? active_bg : inact_bdr), 0);
+        if (lbl_data_switch_logs) lv_obj_set_style_text_color(lbl_data_switch_logs, lv_color_hex(!showing_users ? 0xFFFFFF : inact_txt), 0);
+    }
+
+    if (cont_users_section) {
+        lv_obj_set_style_bg_color(cont_users_section, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(cont_users_section, lv_color_hex(c_border), 0);
+    }
+    if (lbl_users_title) lv_obj_set_style_text_color(lbl_users_title, lv_color_hex(c_text_pri), 0);
+    if (btn_refresh_users) {
+        lv_obj_set_style_bg_color(btn_refresh_users, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_refresh_users, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    }
+
+    if (cont_logs_section) {
+        lv_obj_set_style_bg_color(cont_logs_section, lv_color_hex(c_card), 0);
+        lv_obj_set_style_border_color(cont_logs_section, lv_color_hex(c_border), 0);
+    }
     if (lbl_log_title) lv_obj_set_style_text_color(lbl_log_title, lv_color_hex(c_text_pri), 0);
     if (btn_refresh_log) {
         lv_obj_set_style_bg_color(btn_refresh_log, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(btn_refresh_log, lv_color_hex(COLOR_CYAN_ACCENT), 0);
     }
+
+    /* Tabel USERS & LOGS: Sel-sel tabel (LV_PART_ITEMS) */
+    uint32_t tbl_cell_bg     = is_dark ? 0x0F172A : 0xFFFFFF;
+    uint32_t tbl_cell_text   = is_dark ? 0xF8FAFC : 0x0F172A;
+    uint32_t tbl_cell_border = is_dark ? 0x1E293B : 0xE2E8F0;
+
+    if (cont_users_list) {
+        lv_obj_set_style_bg_color(cont_users_list, lv_color_hex(is_dark ? 0x060E1A : 0xF8FAFC), 0);
+        lv_obj_set_style_border_color(cont_users_list, lv_color_hex(c_border), 0);
+    }
+    if (table_users) {
+        lv_obj_set_style_bg_color(table_users, lv_color_hex(tbl_cell_bg), LV_PART_ITEMS);
+        lv_obj_set_style_text_color(table_users, lv_color_hex(tbl_cell_text), LV_PART_ITEMS);
+        lv_obj_set_style_border_color(table_users, lv_color_hex(tbl_cell_border), LV_PART_ITEMS);
+    }
+
     if (cont_log_list) {
-        lv_obj_set_style_bg_color(cont_log_list, lv_color_hex(is_dark ? 0x060E1A : 0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(cont_log_list, lv_color_hex(is_dark ? 0x060E1A : 0xF8FAFC), 0);
         lv_obj_set_style_border_color(cont_log_list, lv_color_hex(c_border), 0);
     }
     if (table_log) {
-        lv_obj_set_style_text_color(table_log, lv_color_hex(c_text_pri), 0);
+        lv_obj_set_style_bg_color(table_log, lv_color_hex(tbl_cell_bg), LV_PART_ITEMS);
+        lv_obj_set_style_text_color(table_log, lv_color_hex(tbl_cell_text), LV_PART_ITEMS);
+        lv_obj_set_style_border_color(table_log, lv_color_hex(tbl_cell_border), LV_PART_ITEMS);
     }
 
-    /* Tab 4 Elements (Test Device) */
+    /* ====================================================================== */
+    /* TAB 4: DIAGNOSTIK HARDWARE & INFORMASI PERANGKAT                       */
+    /* ====================================================================== */
+    if (btn_diag_beep) {
+        lv_obj_set_style_bg_color(btn_diag_beep, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_diag_beep, lv_color_hex(c_border), 0);
+    }
+    if (btn_diag_rfid) {
+        lv_obj_set_style_bg_color(btn_diag_rfid, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_diag_rfid, lv_color_hex(c_border), 0);
+    }
+    if (btn_diag_sd) {
+        lv_obj_set_style_bg_color(btn_diag_sd, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_diag_sd, lv_color_hex(c_border), 0);
+    }
+    if (btn_diag_wifi) {
+        lv_obj_set_style_bg_color(btn_diag_wifi, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_diag_wifi, lv_color_hex(c_border), 0);
+    }
+    if (btn_diag_rtc) {
+        lv_obj_set_style_bg_color(btn_diag_rtc, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_diag_rtc, lv_color_hex(c_border), 0);
+    }
+    if (btn_refresh_info) {
+        lv_obj_set_style_bg_color(btn_refresh_info, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(btn_refresh_info, lv_color_hex(COLOR_CYAN_ACCENT), 0);
+    }
+
     if (cont_diag_box) {
         lv_obj_set_style_bg_color(cont_diag_box, lv_color_hex(is_dark ? 0x060E1A : 0xFFFFFF), 0);
         lv_obj_set_style_border_color(cont_diag_box, lv_color_hex(c_border), 0);
     }
     if (lbl_diag_title) lv_obj_set_style_text_color(lbl_diag_title, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    if (lbl_diag_summary) lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(c_text_pri), 0);
-    if (lbl_diag_detail) lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(c_text_mut), 0);
+    if (lbl_diag_summary) lv_obj_set_style_text_color(lbl_diag_summary, lv_color_hex(is_dark ? 0xF8FAFC : 0x0F172A), 0);
+    if (lbl_diag_detail) lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(is_dark ? 0x94A3B8 : 0x334155), 0);
 
-    if (btn_diag_beep) lv_obj_set_style_bg_color(btn_diag_beep, lv_color_hex(c_btn_bg), 0);
-    if (btn_diag_rfid) lv_obj_set_style_bg_color(btn_diag_rfid, lv_color_hex(c_btn_bg), 0);
-    if (btn_diag_sd) lv_obj_set_style_bg_color(btn_diag_sd, lv_color_hex(c_btn_bg), 0);
-    if (btn_diag_wifi) lv_obj_set_style_bg_color(btn_diag_wifi, lv_color_hex(c_btn_bg), 0);
-    if (btn_diag_rtc) lv_obj_set_style_bg_color(btn_diag_rtc, lv_color_hex(c_btn_bg), 0);
-
-    /* Tab LPCD Delta & Interval */
-    if (lbl_lpcd_title) lv_obj_set_style_text_color(lbl_lpcd_title, lv_color_hex(c_text_pri), 0);
-    if (lbl_lpcd_int_title) lv_obj_set_style_text_color(lbl_lpcd_int_title, lv_color_hex(c_text_pri), 0);
-    if (dropdown_lpcd_delta) {
-        lv_obj_set_style_bg_color(dropdown_lpcd_delta, lv_color_hex(c_btn_bg), 0);
-        lv_obj_set_style_border_color(dropdown_lpcd_delta, lv_color_hex(c_border), 0);
-        lv_obj_set_style_text_color(dropdown_lpcd_delta, lv_color_hex(c_text_pri), 0);
-    }
-    if (dropdown_lpcd_interval) {
-        lv_obj_set_style_bg_color(dropdown_lpcd_interval, lv_color_hex(c_btn_bg), 0);
-        lv_obj_set_style_border_color(dropdown_lpcd_interval, lv_color_hex(c_border), 0);
-        lv_obj_set_style_text_color(dropdown_lpcd_interval, lv_color_hex(c_text_pri), 0);
-    }
-
-    /* Tab USERS (USERS.CSV) */
-    if (lbl_users_title) lv_obj_set_style_text_color(lbl_users_title, lv_color_hex(c_text_pri), 0);
-    if (lbl_users_count) lv_obj_set_style_text_color(lbl_users_count, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    if (btn_refresh_users) {
-        lv_obj_set_style_bg_color(btn_refresh_users, lv_color_hex(c_btn_bg), 0);
-        lv_obj_set_style_border_color(btn_refresh_users, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    }
-    if (cont_users_list) {
-        lv_obj_set_style_bg_color(cont_users_list, lv_color_hex(is_dark ? 0x060E1A : 0xFFFFFF), 0);
-        lv_obj_set_style_border_color(cont_users_list, lv_color_hex(c_border), 0);
-    }
-    if (table_users) {
-        lv_obj_set_style_text_color(table_users, lv_color_hex(c_text_pri), 0);
-    }
-
-    /* Tab INFO (Diagnostik & Wi-Fi 6) */
-    if (lbl_info_title) lv_obj_set_style_text_color(lbl_info_title, lv_color_hex(c_text_pri), 0);
-    if (btn_refresh_info) {
-        lv_obj_set_style_bg_color(btn_refresh_info, lv_color_hex(c_btn_bg), 0);
-        lv_obj_set_style_border_color(btn_refresh_info, lv_color_hex(COLOR_CYAN_ACCENT), 0);
-    }
-    if (cont_info_box) {
-        lv_obj_set_style_bg_color(cont_info_box, lv_color_hex(is_dark ? 0x060E1A : 0xFFFFFF), 0);
-        lv_obj_set_style_border_color(cont_info_box, lv_color_hex(c_border), 0);
-    }
+    /* Info Perangkat Sub-headings and Details */
+    if (lbl_info_wifi_sec) lv_obj_set_style_text_color(lbl_info_wifi_sec, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (lbl_info_wifi_status) lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(c_text_pri), 0);
     if (lbl_info_wifi_ssid) lv_obj_set_style_text_color(lbl_info_wifi_ssid, lv_color_hex(c_text_mut), 0);
     if (lbl_info_wifi_ip_mac) lv_obj_set_style_text_color(lbl_info_wifi_ip_mac, lv_color_hex(c_text_mut), 0);
+    if (lbl_info_rfid_sec) lv_obj_set_style_text_color(lbl_info_rfid_sec, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (lbl_info_rfid_chip) lv_obj_set_style_text_color(lbl_info_rfid_chip, lv_color_hex(c_text_pri), 0);
     if (lbl_info_rfid_proto) lv_obj_set_style_text_color(lbl_info_rfid_proto, lv_color_hex(c_text_mut), 0);
+    if (lbl_info_sys_sec) lv_obj_set_style_text_color(lbl_info_sys_sec, lv_color_hex(COLOR_CYAN_TEXT), 0);
     if (lbl_info_fw_ver) lv_obj_set_style_text_color(lbl_info_fw_ver, lv_color_hex(c_text_pri), 0);
     if (lbl_info_mcu_info) lv_obj_set_style_text_color(lbl_info_mcu_info, lv_color_hex(c_text_mut), 0);
     if (lbl_info_mem_info) lv_obj_set_style_text_color(lbl_info_mem_info, lv_color_hex(c_text_mut), 0);
@@ -2569,9 +2616,10 @@ static void ntp_timeout_cb(lv_timer_t * t)
 static void load_recent_logs(void)
 {
     if (table_log == NULL) return;
+    Watchdog_KickDirect();
 
-    char log_buffer[12][64];
-    uint16_t n = Storage_ReadRecentLogs(log_buffer, 12);
+    uint16_t n = Storage_ReadRecentLogs(s_admin_logs_cache, 16);
+    Watchdog_KickDirect();
 
     /* Reset row count: Baris 0 adalah Header */
     lv_table_set_row_count(table_log, n > 0 ? (n + 1) : 2);
@@ -2596,7 +2644,7 @@ static void load_recent_logs(void)
         lv_table_set_cell_value(table_log, row, 0, num_str);
 
         char line[64];
-        strncpy(line, log_buffer[n - 1 - i], sizeof(line) - 1);
+        strncpy(line, s_admin_logs_cache[n - 1 - i], sizeof(line) - 1);
         line[sizeof(line) - 1] = '\0';
 
         char *token_time = strtok(line, ",");
@@ -2607,6 +2655,7 @@ static void load_recent_logs(void)
         lv_table_set_cell_value(table_log, row, 2, token_uid ? token_uid : "-");
         lv_table_set_cell_value(table_log, row, 3, token_stat ? token_stat : "OK");
     }
+    Watchdog_KickDirect();
 }
 
 static void btn_refresh_log_cb(lv_event_t * e)
@@ -2677,10 +2726,15 @@ static void btn_keypad_click_cb(lv_event_t * e)
             g_pin_len = 0;
             g_entered_pin[0] = '\0';
             lv_screen_load(screen_admin);
+            Watchdog_KickDirect();
             load_recent_logs();
+            Watchdog_KickDirect();
             GUI_Attendance_UpdatePendingCount(Storage_GetPendingCount());
+            Watchdog_KickDirect();
             GUI_Attendance_RefreshUsersTable();
+            Watchdog_KickDirect();
             GUI_Attendance_RefreshInfoTab();
+            Watchdog_KickDirect();
         } else {
             /* PIN Salah! */
             HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
@@ -2914,6 +2968,47 @@ static void btn_refresh_info_cb(lv_event_t * e)
     GUI_Attendance_RefreshInfoTab();
 }
 
+static void btn_data_switch_cb(lv_event_t * e)
+{
+    GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
+    lv_obj_t * target = lv_event_get_target(e);
+
+    bool show_users = (target == btn_data_switch_users);
+
+    if (show_users) {
+        if (cont_users_section) lv_obj_remove_flag(cont_users_section, LV_OBJ_FLAG_HIDDEN);
+        if (cont_logs_section) lv_obj_add_flag(cont_logs_section, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        if (cont_users_section) lv_obj_add_flag(cont_users_section, LV_OBJ_FLAG_HIDDEN);
+        if (cont_logs_section) lv_obj_remove_flag(cont_logs_section, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    /* Update styling of the two switch buttons */
+    if (btn_data_switch_users && btn_data_switch_logs) {
+        uint32_t active_bg   = COLOR_CYAN_ACCENT;
+        uint32_t active_txt  = 0xFFFFFF;
+        uint32_t inact_bg    = g_theme_is_dark ? COLOR_DARK_CARD : COLOR_LIGHT_CARD;
+        uint32_t inact_txt   = g_theme_is_dark ? COLOR_DARK_TEXT_MUTED : COLOR_LIGHT_TEXT_MUTED;
+        uint32_t inact_bdr   = g_theme_is_dark ? COLOR_DARK_BORDER : COLOR_LIGHT_BORDER;
+
+        lv_obj_set_style_bg_color(btn_data_switch_users, lv_color_hex(show_users ? active_bg : inact_bg), 0);
+        lv_obj_set_style_border_color(btn_data_switch_users, lv_color_hex(show_users ? active_bg : inact_bdr), 0);
+        if (lbl_data_switch_users) lv_obj_set_style_text_color(lbl_data_switch_users, lv_color_hex(show_users ? active_txt : inact_txt), 0);
+
+        lv_obj_set_style_bg_color(btn_data_switch_logs, lv_color_hex(!show_users ? active_bg : inact_bg), 0);
+        lv_obj_set_style_border_color(btn_data_switch_logs, lv_color_hex(!show_users ? active_bg : inact_bdr), 0);
+        if (lbl_data_switch_logs) lv_obj_set_style_text_color(lbl_data_switch_logs, lv_color_hex(!show_users ? active_txt : inact_txt), 0);
+    }
+
+    if (show_users) {
+        GUI_Attendance_RefreshUsersTable();
+    } else {
+        load_recent_logs();
+    }
+    Watchdog_KickDirect();
+}
+
 static void btn_admin_back_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
@@ -3031,11 +3126,19 @@ static void ta_wifi_focus_cb(lv_event_t * e)
     lv_obj_t * ta = lv_event_get_target(e);
 
     if (code == LV_EVENT_FOCUSED || code == LV_EVENT_CLICKED) {
-        if (kb_wifi) {
-            lv_keyboard_set_textarea(kb_wifi, ta);
-            lv_obj_clear_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(kb_wifi);
+        if (kb_wifi == NULL) {
+            kb_wifi = lv_keyboard_create(lv_layer_top());
+            lv_obj_set_size(kb_wifi, 480, 155);
+            lv_obj_align(kb_wifi, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_set_style_pad_all(kb_wifi, 2, 0);
+            lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_TEXT_LOWER, (const char **)custom_kb_map_lc, custom_kb_ctrl_lc_map);
+            lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_TEXT_UPPER, (const char **)custom_kb_map_uc, custom_kb_ctrl_uc_map);
+            lv_keyboard_set_map(kb_wifi, LV_KEYBOARD_MODE_SPECIAL,    (const char **)custom_kb_map_spec, custom_kb_ctrl_spec_map);
+            lv_obj_add_event_cb(kb_wifi, kb_wifi_event_cb, LV_EVENT_ALL, NULL);
         }
+        lv_keyboard_set_textarea(kb_wifi, ta);
+        lv_obj_remove_flag(kb_wifi, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(kb_wifi);
     } else if (code == LV_EVENT_DEFOCUSED) {
         /* Biarkan keyboard aktif sampai tombol OK atau CANCEL ditekan */
     }
@@ -3062,6 +3165,7 @@ static void btn_diag_beep_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
     Buzzer_TestDiagnostic();
     if (lbl_diag_summary) {
         lv_label_set_text(lbl_diag_summary, "Buzzer: AKTIF [OK]");
@@ -3069,14 +3173,16 @@ static void btn_diag_beep_cb(lv_event_t * e)
     }
     if (lbl_diag_detail) {
         lv_label_set_text(lbl_diag_detail, "Buzzer berbunyi nada ganda. Jalur GPIO PB8 dan transistor driver normal.");
-        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(g_theme_is_dark ? COLOR_DARK_TEXT_MUTED : 0x334155), 0);
     }
+    Watchdog_KickDirect();
 }
 
 static void btn_diag_rfid_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
     char msg[128] = {0};
     bool ok = RFID_TestDiagnostic(msg, sizeof(msg));
     if (lbl_diag_summary) {
@@ -3086,18 +3192,20 @@ static void btn_diag_rfid_cb(lv_event_t * e)
     if (lbl_diag_detail) {
         if (ok) {
             lv_label_set_text(lbl_diag_detail, msg);
-            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(g_theme_is_dark ? COLOR_DARK_TEXT_PRIMARY : 0x0F172A), 0);
         } else {
             lv_label_set_text(lbl_diag_detail, "Chip RFID tidak merespon SPI3. Solusi:\n1. Cek jalur SPI3 (PB3, PB4, PB5, CS PD2).\n2. Pastikan pin 3.3V dan GND terhubung rapat.");
             lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_RED_STATUS), 0);
         }
     }
+    Watchdog_KickDirect();
 }
 
 static void btn_diag_sd_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
     char msg[128] = {0};
     bool ok = Storage_TestDiagnostic(msg, sizeof(msg));
     if (lbl_diag_summary) {
@@ -3107,18 +3215,20 @@ static void btn_diag_sd_cb(lv_event_t * e)
     if (lbl_diag_detail) {
         if (ok) {
             lv_label_set_text(lbl_diag_detail, msg);
-            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(g_theme_is_dark ? COLOR_DARK_TEXT_PRIMARY : 0x0F172A), 0);
         } else {
             lv_label_set_text(lbl_diag_detail, "SD Card tidak dapat dibaca/tulis. Solusi:\n1. Pastikan MicroSD terpasang rapat di slot.\n2. Format ulang MicroSD dengan sistem file FAT32.\n3. Gunakan kapasitas maksimal 32GB.");
             lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_RED_STATUS), 0);
         }
     }
+    Watchdog_KickDirect();
 }
 
 static void btn_diag_wifi_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
     char msg[128] = {0};
     bool ok = WiFi_GetDiagnostic(msg, sizeof(msg));
     if (lbl_diag_summary) {
@@ -3128,18 +3238,20 @@ static void btn_diag_wifi_cb(lv_event_t * e)
     if (lbl_diag_detail) {
         if (ok) {
             lv_label_set_text(lbl_diag_detail, msg);
-            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+            lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(g_theme_is_dark ? COLOR_DARK_TEXT_PRIMARY : 0x0F172A), 0);
         } else {
             lv_label_set_text(lbl_diag_detail, "Koneksi ke Wi-Fi belum aktif. Solusi:\n1. Buka tab WI-FI dan periksa nama SSID & Password.\n2. Pastikan router Wi-Fi dalam jangkauan sinyal.");
             lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_AMBER_STATUS), 0);
         }
     }
+    Watchdog_KickDirect();
 }
 
 static void btn_diag_rtc_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
     char msg[128] = {0};
     RTC_GetDiagnostic(msg, sizeof(msg));
     if (lbl_diag_summary) {
@@ -3148,27 +3260,34 @@ static void btn_diag_rtc_cb(lv_event_t * e)
     }
     if (lbl_diag_detail) {
         lv_label_set_text(lbl_diag_detail, msg);
-        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(g_theme_is_dark ? COLOR_DARK_TEXT_PRIMARY : 0x0F172A), 0);
     }
+    Watchdog_KickDirect();
 }
 
 static void btn_diag_all_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
+    Watchdog_KickDirect();
     Buzzer_TestDiagnostic();
+    Watchdog_KickDirect();
 
     char msg_rfid[128] = {0};
     bool ok_rfid = RFID_TestDiagnostic(msg_rfid, sizeof(msg_rfid));
+    Watchdog_KickDirect();
 
     char msg_sd[128] = {0};
     bool ok_sd = Storage_TestDiagnostic(msg_sd, sizeof(msg_sd));
+    Watchdog_KickDirect();
 
     char msg_wifi[128] = {0};
     bool ok_wifi = WiFi_GetDiagnostic(msg_wifi, sizeof(msg_wifi));
+    Watchdog_KickDirect();
 
     char msg_rtc[128] = {0};
     bool ok_rtc = RTC_GetDiagnostic(msg_rtc, sizeof(msg_rtc));
+    Watchdog_KickDirect();
 
     if (lbl_diag_summary) {
         char summary[128];
@@ -3188,7 +3307,7 @@ static void btn_diag_all_cb(lv_event_t * e)
                  ok_wifi ? "Terhubung ke AP" : "Belum Terhubung AP",
                  ok_rtc ? "Jam Berjalan Normal" : "Jam Belum Terkalibrasi");
         lv_label_set_text(lbl_diag_detail, detail);
-        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_color(lbl_diag_detail, lv_color_hex(g_theme_is_dark ? COLOR_DARK_TEXT_PRIMARY : 0x0F172A), 0);
     }
 
     char pop_diag[128];
@@ -3230,9 +3349,10 @@ void GUI_Attendance_SetBulkStatus(const char *status, bool is_ok)
 void GUI_Attendance_RefreshUsersTable(void)
 {
     if (table_users == NULL) return;
+    Watchdog_KickDirect();
 
-    user_entry_t users[32];
-    uint16_t count = Storage_GetRegisteredUsers(users, 32);
+    uint16_t count = Storage_GetRegisteredUsers(s_admin_users_cache, 48);
+    Watchdog_KickDirect();
 
     if (lbl_users_count) {
         lv_label_set_text_fmt(lbl_users_count, "Total: %u user", (unsigned int)count);
@@ -3257,10 +3377,11 @@ void GUI_Attendance_RefreshUsersTable(void)
         char num_str[8];
         snprintf(num_str, sizeof(num_str), "%u", (unsigned int)row);
         lv_table_set_cell_value(table_users, row, 0, num_str);
-        lv_table_set_cell_value(table_users, row, 1, users[i].uid);
-        lv_table_set_cell_value(table_users, row, 2, users[i].name);
-        lv_table_set_cell_value(table_users, row, 3, (users[i].pos[0] != '\0') ? users[i].pos : "-");
+        lv_table_set_cell_value(table_users, row, 1, s_admin_users_cache[i].uid);
+        lv_table_set_cell_value(table_users, row, 2, s_admin_users_cache[i].name);
+        lv_table_set_cell_value(table_users, row, 3, (s_admin_users_cache[i].pos[0] != '\0') ? s_admin_users_cache[i].pos : "-");
     }
+    Watchdog_KickDirect();
 }
 
 void GUI_Attendance_UpdateWifiInfo(const wifi_info_t *info)

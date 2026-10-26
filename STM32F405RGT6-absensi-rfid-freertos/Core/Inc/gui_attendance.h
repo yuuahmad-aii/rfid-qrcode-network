@@ -208,6 +208,7 @@ bool RFID_TestDiagnostic(char *out_msg, size_t max_len);
 bool WiFi_GetDiagnostic(char *out_msg, size_t max_len);
 bool RTC_GetDiagnostic(char *out_msg, size_t max_len);
 void Buzzer_TestDiagnostic(void);
+void Watchdog_KickDirect(void);
 
 #ifdef __cplusplus
 }

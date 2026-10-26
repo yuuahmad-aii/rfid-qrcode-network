@@ -359,6 +359,7 @@ void lv_obj_set_local_style_prop(lv_obj_t * obj, lv_style_prop_t prop, lv_style_
     trans_delete(obj, lv_obj_style_get_selector_part(selector), prop, NULL);
 
     lv_style_t * style = get_local_style(obj, selector);
+    if(style == NULL) return;
     if(selector == LV_PART_MAIN && lv_style_prop_has_flag(prop, LV_STYLE_PROP_FLAG_TRANSFORM)) {
         lv_obj_invalidate(obj);
     }
@@ -763,6 +764,10 @@ static lv_style_t * get_local_style(lv_obj_t * obj, lv_style_selector_t selector
     obj->style_cnt++;
     LV_ASSERT(obj->style_cnt != 0);
     obj->styles = lv_realloc(obj->styles, obj->style_cnt * sizeof(lv_obj_style_t));
+    if(obj->styles == NULL) {
+        obj->style_cnt--;
+        return NULL;
+    }
     LV_ASSERT_MALLOC(obj->styles);
 
     for(i = obj->style_cnt - 1; i > 0 ; i--) {
@@ -774,6 +779,9 @@ static lv_style_t * get_local_style(lv_obj_t * obj, lv_style_selector_t selector
 
     lv_memzero(&obj->styles[i], sizeof(lv_obj_style_t));
     obj->styles[i].style = lv_malloc_zeroed(sizeof(lv_style_t));
+    if(obj->styles[i].style == NULL) {
+        return NULL;
+    }
     lv_style_init((lv_style_t *)obj->styles[i].style);
 
     obj->styles[i].is_local = 1;

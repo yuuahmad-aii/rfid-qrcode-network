@@ -118,7 +118,7 @@ const osThreadAttr_t Task_RFID_attributes = {
 osThreadId_t Task_GUIHandle;
 const osThreadAttr_t Task_GUI_attributes = {
     .name = "Task_GUI",
-    .stack_size = 2048 * 4,
+    .stack_size = 2560 * 4,
     .priority = (osPriority_t)osPriorityAboveNormal,
 };
 /* Definitions for Task_ESP32 */
@@ -240,6 +240,13 @@ void Watchdog_CheckIn(uint32_t task_mask) {
   }
   taskEXIT_CRITICAL();
 }
+
+void Watchdog_KickDirect(void) {
+  taskENTER_CRITICAL();
+  HAL_IWDG_Refresh(&hiwdg);
+  g_wdt_task_checkin = 0;
+  taskEXIT_CRITICAL();
+}
 /* USER CODE END 0 */
 
 /**
@@ -259,7 +266,9 @@ int main(void) {
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* Zero out CCMRAM section (0x10000000) agar semua variabel dan pool LVGL terinisialisasi bersih */
+  extern uint8_t _sccmram, _eccmram;
+  memset(&_sccmram, 0, (size_t)(&_eccmram - &_sccmram));
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -349,7 +358,15 @@ int main(void) {
       osThreadNew(StartStorageTask, NULL, &Task_Storage_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  if (Task_RFIDHandle == NULL || Task_GUIHandle == NULL ||
+      Task_ESP32Handle == NULL || Task_StorageHandle == NULL) {
+    /* Alokasi task FreeRTOS gagal akibat memori heap habis */
+    while (1) {
+      HAL_GPIO_TogglePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin);
+      HAL_Delay(80);
+      HAL_IWDG_Refresh(&hiwdg);
+    }
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -484,9 +501,9 @@ static void MX_IWDG_Init(void) {
 
   /* USER CODE END IWDG_Init 1 */
   hiwdg.Instance = IWDG;
-  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
   hiwdg.Init.Reload =
-      2000; /* 32 kHz / 32 = 1000 Hz => 2000 reload = 2.0 detik timeout */
+      3000; /* 32 kHz / 64 = 500 Hz => 3000 reload = 6.0 detik timeout */
   if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
     Error_Handler();
   }
@@ -2135,18 +2152,15 @@ void StartGuiTask(void *argument) {
   /* Muat konfigurasi tersimpan dari Flash STM32 (Sector 11) */
   App_Settings_Init();
 
-  /* 1. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 sesuai pengaturan
-   * tersimpan */
-  HAL_TIM_Base_Start(&htim3);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-  uint32_t compare = ((uint32_t)g_app_settings.brightness * 65535) / 100;
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, compare);
-
-  /* 2. Inisialisasi Core LVGL */
+  /* 1. Inisialisasi Core LVGL */
   lv_init();
   lv_tick_set_cb(HAL_GetTick);
 
-  /* 3. Setup Display LVGL untuk ILI9488 (RGB888) */
+  /* Tambahkan pool memori sekunder 16 KB dari SRAM ke allocator LVGL (total pool: 62 KB CCMRAM + 16 KB SRAM = 78 KB) */
+  static uint8_t s_lvgl_extra_pool[16384] __attribute__((aligned(4)));
+  lv_mem_add_pool(s_lvgl_extra_pool, sizeof(s_lvgl_extra_pool));
+
+  /* 2. Setup Display LVGL untuk ILI9488 (RGB888) */
   lv_display_t *disp = lv_display_create(ILI9488_WIDTH, ILI9488_HEIGHT);
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB888);
   lv_display_set_flush_cb(disp, my_disp_flush);
@@ -2157,13 +2171,26 @@ void StartGuiTask(void *argument) {
   lv_display_set_buffers(disp, lv_draw_buf, NULL, sizeof(lv_draw_buf),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
 
-  /* 4. Setup Input Device Touchscreen (XPT2046) */
+  /* 3. Setup Input Device Touchscreen (XPT2046) */
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
-  /* 5. Inisialisasi Antarmuka GUI Absensi */
+  Watchdog_KickDirect();
+
+  /* 4. Inisialisasi Antarmuka GUI Absensi */
   GUI_Attendance_Init();
+
+  /* 5. Render frame pertama ke ILI9488 SEBELUM menyalakan backlight agar tidak ada blank putih */
+  lv_timer_handler();
+
+  /* 6. Nyalakan Backlight Layar LCD via PWM TIM3 CH3 setelah gambar pertama selesai */
+  HAL_TIM_Base_Start(&htim3);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+  uint32_t compare = ((uint32_t)g_app_settings.brightness * 65535) / 100;
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, compare);
+
+  Watchdog_KickDirect();
 
   uint32_t last_clock_tick = 0;
 
