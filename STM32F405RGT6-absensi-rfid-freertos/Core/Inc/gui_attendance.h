@@ -149,7 +149,8 @@ typedef struct {
     uint8_t  sync_mode;          /* SYNC_MODE_REALTIME..SYNC_MODE_1_DAY (1 byte) */
     uint8_t  lpcd_delta;         /* LPCD threshold delta: 1 - 10 (default: 3) (1 byte) */
     uint16_t lpcd_interval_ms;   /* LPCD sleep interval: 150, 250, 300, 500 ms (default: 300) (2 bytes) */
-    uint8_t  reserved[58];       /* Padding to exactly 256 bytes total */
+    uint8_t  screen_rotation;    /* 0 = Normal (Port Bawah), 1 = Terbalik (Port Atas) (1 byte) */
+    uint8_t  reserved[57];       /* Padding to exactly 256 bytes total */
 } app_settings_t;
 
 extern app_settings_t g_app_settings;
@@ -158,6 +159,12 @@ void App_Settings_Init(void);
 bool App_Settings_Load(app_settings_t *out_settings);
 bool App_Settings_Save(const app_settings_t *in_settings);
 void App_Settings_ResetDefaults(app_settings_t *settings);
+
+/* Screen Rotation & OTA Modal Controls */
+void GUI_Attendance_SetScreenRotation(uint8_t rot);
+void GUI_Attendance_ShowOTAModal(bool show, const char *ssid, const char *pass, const char *ip);
+void GUI_Attendance_UpdateOTAProgress(int percent, const char *status_msg);
+void GUI_Attendance_ShowSTM32FlashingWarning(void);
 
 /* ========================================================================== */
 /*                       WI-FI 6 & DEVICE DIAGNOSTICS INFO                    */

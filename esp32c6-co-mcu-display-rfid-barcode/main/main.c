@@ -3,6 +3,9 @@
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
+#include "esp_http_server.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_mac.h"
@@ -35,6 +38,11 @@
 
 #define BOOT_BUTTON_GPIO GPIO_NUM_9
 #define BLINK_GPIO GPIO_NUM_8
+
+/* STM32 Bootloader & Reset Control Pins */
+#define STM32_NRST_GPIO   GPIO_NUM_22
+#define STM32_BOOT0_GPIO  GPIO_NUM_21
+
 
 static const char *cloudflare_ca_pem = \
 "-----BEGIN CERTIFICATE-----\n" \
@@ -117,6 +125,10 @@ static char s_api_key[64] = API_KEY;
 static bool s_wifi_connected_prev = false;
 static int s_wifi_retry_count = 0;
 static esp_netif_t *s_sta_netif = NULL;
+static esp_netif_t *s_ap_netif = NULL;
+static bool s_is_ap_mode = false;
+static httpd_handle_t s_http_server = NULL;
+static volatile bool s_flashing_stm32_active = false;
 
 static void send_wifi_status_info(void) {
   wifi_ap_record_t ap_info;
@@ -307,6 +319,765 @@ void wifi_init_sta(void) {
 
   ESP_LOGI(TAG, "wifi_init_sta started for SSID: '%s'", ssid);
 }
+
+/* ========================================================================== */
+/*                STM32 BOOTLOADER FLASHER & HARDWARE CONTROL                 */
+/* ========================================================================== */
+
+static void stm32_gpio_init(void) {
+    /* Konfigurasi pin kontrol bootloader STM32: IO21 (BOOT0) dan IO22 (NRST) */
+    gpio_reset_pin(STM32_BOOT0_GPIO);
+    gpio_reset_pin(STM32_NRST_GPIO);
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << STM32_NRST_GPIO) | (1ULL << STM32_BOOT0_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    /* Kondisi normal: BOOT0 = 0 (Flash Normal), NRST = 1 (Running) */
+    gpio_set_level(STM32_BOOT0_GPIO, 0);
+    gpio_set_level(STM32_NRST_GPIO, 1);
+}
+
+typedef enum {
+    FLASH_STATE_IDLE = 0,
+    FLASH_STATE_UPLOADING,
+    FLASH_STATE_READY,
+    FLASH_STATE_ERASING,
+    FLASH_STATE_PROGRAMMING,
+    FLASH_STATE_SUCCESS,
+    FLASH_STATE_ERROR
+} flash_state_t;
+
+static volatile flash_state_t s_flash_state = FLASH_STATE_IDLE;
+static volatile int s_flash_progress = 0;
+static char s_flash_status_msg[128] = "Standby";
+static size_t s_staged_firmware_size = 0;
+
+static esp_err_t stm32_bootloader_enter(void) {
+    ESP_LOGI(TAG, "Entering STM32 ROM Bootloader...");
+
+    /* Pastikan pin dikonfigurasi sebagai output aktif */
+    gpio_set_direction(STM32_BOOT0_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_direction(STM32_NRST_GPIO, GPIO_MODE_OUTPUT);
+
+    /* 1. Beri tahu STM32 via UART sebelum reset agar menampilkan layar peringatan di LCD */
+    uart_send_and_log("OTA_STM32_START\n");
+    vTaskDelay(pdMS_TO_TICKS(220));
+
+    /* 2. Tarik BOOT0 = HIGH (Pilih boot dari System Memory / ROM Bootloader) */
+    gpio_set_level(STM32_BOOT0_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    /* 3. Tarik NRST = LOW (Reset MCU) */
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    /* 4. Lepas NRST = HIGH sementara BOOT0 TETAP HIGH */
+    gpio_set_level(STM32_NRST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(300)); /* Tunggu ROM bootloader internal STM32 stabil */
+
+    /* 5. Ganti UART parity ke EVEN (Protokol ST AN3155 mensyaratkan 8-E-1) */
+    uart_set_parity(UART_PORT_NUM, UART_PARITY_EVEN);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    uart_flush_input(UART_PORT_NUM);
+
+    /* 6. Kirim init byte 0x7F untuk auto-baud synchronize dengan retry hingga 10 kali */
+    uint8_t init_cmd = 0x7F;
+    uint8_t ack = 0;
+    for (int retry = 0; retry < 10; retry++) {
+        uart_flush_input(UART_PORT_NUM);
+        uart_write_bytes(UART_PORT_NUM, &init_cmd, 1);
+        int len = uart_read_bytes(UART_PORT_NUM, &ack, 1, pdMS_TO_TICKS(350));
+        if (len > 0 && (ack == 0x79 || ack == 0x1F)) {
+            ESP_LOGI(TAG, "STM32 Bootloader synchronized! (ack=0x%02X on attempt %d)", ack, retry + 1);
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    ESP_LOGE(TAG, "Failed to enter STM32 bootloader! (ack=0x%02X)", ack);
+    return ESP_FAIL;
+}
+
+static void stm32_bootloader_exit(void) {
+    ESP_LOGI(TAG, "Exiting STM32 Bootloader to Normal Application Mode...");
+    /* BOOT0 = LOW */
+    gpio_set_level(STM32_BOOT0_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    /* Pulse NRST */
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(80));
+    gpio_set_level(STM32_NRST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    /* Kembalikan UART ke Normal Parity (Disabled / 8-N-1) */
+    uart_set_parity(UART_PORT_NUM, UART_PARITY_DISABLE);
+    uart_flush_input(UART_PORT_NUM);
+}
+
+static esp_err_t stm32_bootloader_erase(void) {
+    ESP_LOGI(TAG, "Erasing STM32 Flash (Extended Erase 0x44)...");
+    /* Command Extended Erase: 0x44 0xBB */
+    uint8_t cmd[2] = {0x44, 0xBB};
+    uart_write_bytes(UART_PORT_NUM, cmd, 2);
+
+    uint8_t ack = 0;
+    int len = uart_read_bytes(UART_PORT_NUM, &ack, 1, pdMS_TO_TICKS(1500));
+    if (len <= 0 || ack != 0x79) {
+        ESP_LOGE(TAG, "Erase command ACK failed: 0x%02X", ack);
+        return ESP_FAIL;
+    }
+
+    /* Global Mass Erase: 0xFF 0xFF 0x00 */
+    uint8_t mass_erase[3] = {0xFF, 0xFF, 0x00};
+    uart_write_bytes(UART_PORT_NUM, mass_erase, 3);
+
+    /* Mass erase flash 1MB butuh waktu 3-15 detik */
+    len = uart_read_bytes(UART_PORT_NUM, &ack, 1, pdMS_TO_TICKS(30000));
+    if (len <= 0 || ack != 0x79) {
+        ESP_LOGE(TAG, "Global Mass Erase execution failed: 0x%02X", ack);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "STM32 Flash Erased successfully!");
+    return ESP_OK;
+}
+
+static esp_err_t stm32_bootloader_write_chunk(uint32_t addr, const uint8_t *data, uint16_t len) {
+    if (len == 0 || len > 256) return ESP_ERR_INVALID_ARG;
+
+    /* 1. Kirim Command Write Memory: 0x31 0xCE */
+    uint8_t cmd[2] = {0x31, 0xCE};
+    uart_write_bytes(UART_PORT_NUM, cmd, 2);
+    uint8_t ack = 0;
+    int rlen = uart_read_bytes(UART_PORT_NUM, &ack, 1, pdMS_TO_TICKS(1000));
+    if (rlen <= 0 || ack != 0x79) {
+        ESP_LOGE(TAG, "Write cmd ACK failed at 0x%08lX (ack=0x%02X)", (unsigned long)addr, ack);
+        return ESP_FAIL;
+    }
+
+    /* 2. Kirim 4 byte alamat (MSB first) + XOR Checksum */
+    uint8_t addr_buf[5];
+    addr_buf[0] = (uint8_t)((addr >> 24) & 0xFF);
+    addr_buf[1] = (uint8_t)((addr >> 16) & 0xFF);
+    addr_buf[2] = (uint8_t)((addr >> 8) & 0xFF);
+    addr_buf[3] = (uint8_t)(addr & 0xFF);
+    addr_buf[4] = addr_buf[0] ^ addr_buf[1] ^ addr_buf[2] ^ addr_buf[3];
+    uart_write_bytes(UART_PORT_NUM, addr_buf, 5);
+
+    rlen = uart_read_bytes(UART_PORT_NUM, &ack, 1, pdMS_TO_TICKS(1000));
+    if (rlen <= 0 || ack != 0x79) {
+        ESP_LOGE(TAG, "Address ACK failed at 0x%08lX (ack=0x%02X)", (unsigned long)addr, ack);
+        return ESP_FAIL;
+    }
+
+    /* 3. Kirim N-1, data bytes, dan XOR Checksum */
+    uint8_t write_buf[258];
+    uint8_t count = (uint8_t)(len - 1);
+    write_buf[0] = count;
+    uint8_t xor_sum = count;
+    for (uint16_t i = 0; i < len; i++) {
+        write_buf[1 + i] = data[i];
+        xor_sum ^= data[i];
+    }
+    write_buf[1 + len] = xor_sum;
+
+    uart_write_bytes(UART_PORT_NUM, write_buf, len + 2);
+    rlen = uart_read_bytes(UART_PORT_NUM, &ack, 1, pdMS_TO_TICKS(2000));
+    if (rlen <= 0 || ack != 0x79) {
+        ESP_LOGE(TAG, "Data payload ACK failed at 0x%08lX (ack=0x%02X)", (unsigned long)addr, ack);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+/* Background Task untuk mem-flash STM32 dari Flash Staging Partition ota_1 */
+static void stm32_flasher_task(void *pvParameters) {
+    ESP_LOGI(TAG, "Starting background STM32 flashing task (Size: %u bytes)...", (unsigned int)s_staged_firmware_size);
+    s_flashing_stm32_active = true;
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+    if (!part) {
+        ESP_LOGE(TAG, "OTA_1 partition not found for staging!");
+        s_flash_state = FLASH_STATE_ERROR;
+        snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Error: Partisi staging flash tidak ditemukan!");
+        s_flashing_stm32_active = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* 1. Masuk ke Bootloader STM32 */
+    s_flash_state = FLASH_STATE_ERASING;
+    s_flash_progress = 5;
+    snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Menghubungkan ke ROM Bootloader STM32...");
+
+    if (stm32_bootloader_enter() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enter STM32 bootloader!");
+        s_flash_state = FLASH_STATE_ERROR;
+        snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Gagal terhubung ke bootloader STM32. Cek koneksi pin IO21 (BOOT0) & IO22 (NRST).");
+        s_flashing_stm32_active = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* 2. Mass Erase Flash STM32 */
+    s_flash_progress = 12;
+    snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Menghapus memori Flash STM32 (Mass Erase)...");
+    if (stm32_bootloader_erase() != ESP_OK) {
+        stm32_bootloader_exit();
+        s_flash_state = FLASH_STATE_ERROR;
+        snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Gagal melakukan Mass Erase Flash STM32.");
+        s_flashing_stm32_active = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* 3. Tulis firmware dari partisi staging ota_1 ke Flash STM32 */
+    s_flash_state = FLASH_STATE_PROGRAMMING;
+    uint32_t current_addr = 0x08000000;
+    size_t bytes_written = 0;
+    uint8_t read_buf[256];
+
+    while (bytes_written < s_staged_firmware_size) {
+        size_t chunk_len = sizeof(read_buf);
+        if (chunk_len > (s_staged_firmware_size - bytes_written)) {
+            chunk_len = s_staged_firmware_size - bytes_written;
+        }
+
+        esp_err_t r_err = esp_partition_read(part, bytes_written, read_buf, chunk_len);
+        if (r_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed reading staged firmware from flash!");
+            stm32_bootloader_exit();
+            s_flash_state = FLASH_STATE_ERROR;
+            snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Gagal membaca file dari partisi staging.");
+            s_flashing_stm32_active = false;
+            vTaskDelete(NULL);
+            return;
+        }
+
+        if (stm32_bootloader_write_chunk(current_addr, read_buf, (uint16_t)chunk_len) != ESP_OK) {
+            ESP_LOGE(TAG, "Write chunk failed at 0x%08lX", (unsigned long)current_addr);
+            stm32_bootloader_exit();
+            s_flash_state = FLASH_STATE_ERROR;
+            snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Gagal memprogram sektor flash 0x%08lX.", (unsigned long)current_addr);
+            s_flashing_stm32_active = false;
+            vTaskDelete(NULL);
+            return;
+        }
+
+        current_addr += chunk_len;
+        bytes_written += chunk_len;
+
+        int pct = 15 + (int)((bytes_written * 83) / s_staged_firmware_size);
+        s_flash_progress = pct;
+        snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Memprogram Flash STM32: %d%% (%u / %u KB)...", pct, (unsigned int)(bytes_written / 1024), (unsigned int)(s_staged_firmware_size / 1024));
+
+        /* Beri nafas untuk RTOS */
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    /* 4. Keluar dari bootloader dan jalankan STM32 secara normal */
+    stm32_bootloader_exit();
+    s_flashing_stm32_active = false;
+
+    s_flash_progress = 100;
+    s_flash_state = FLASH_STATE_SUCCESS;
+    snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "SUKSES: Firmware STM32 berhasil di-flash! STM32 telah reboot.");
+
+    vTaskDelay(pdMS_TO_TICKS(200));
+    uart_send_and_log("OTA_PROGRESS:100|Pembaruan selesai! Menjalankan program baru...\n");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    uart_send_and_log("STA_ACTIVE\n");
+
+    ESP_LOGI(TAG, "STM32 Flashing background task completed successfully!");
+    vTaskDelete(NULL);
+}
+
+/* ========================================================================== */
+/*                   WEB SERVER PORTAL HTML & CSS TEMPLATE                    */
+/* ========================================================================== */
+
+static const char ota_html_page[] =
+"<!DOCTYPE html>"
+"<html lang=\"id\">"
+"<head>"
+"<meta charset=\"UTF-8\">"
+"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">"
+"<title>Portal Update Firmware OTA - Absensi RFID</title>"
+"<style>"
+":root{--bg:#0f172a;--card:#1e293b;--border:#334155;--cyan:#06b6d4;--cyan-h:#0891b2;--amber:#f59e0b;--red:#ef4444;--green:#10b981;--text:#f8fafc;--muted:#94a3b8;}"
+"*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;}"
+"body{background:var(--bg);color:var(--text);padding:18px;min-height:100vh;}"
+".wrap{max-width:800px;margin:0 auto;}"
+".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--border);padding-bottom:14px;margin-bottom:20px;flex-wrap:wrap;gap:10px;}"
+".hdr h1{font-size:22px;font-weight:700;color:#fff;}"
+".hdr p{font-size:12px;color:var(--muted);margin-top:3px;}"
+".badge{background:#064e3b;color:#34d399;border:1px solid #059669;padding:5px 12px;border-radius:9999px;font-size:11px;font-weight:600;}"
+".warn{background:rgba(245,158,11,0.12);border:1px solid var(--amber);border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;gap:12px;align-items:flex-start;}"
+".warn .ico{font-size:22px;line-height:1;color:var(--amber);}"
+".warn h3{font-size:14px;color:#fde68a;font-weight:600;margin-bottom:3px;}"
+".warn p{font-size:12px;color:#cbd5e1;line-height:1.4;}"
+".guide{background:#131d2e;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:20px;font-size:12px;color:#cbd5e1;line-height:1.6;}"
+".guide h4{font-size:13px;color:var(--cyan);margin-bottom:8px;font-weight:600;}"
+".guide ol{padding-left:18px;}"
+".grid{display:grid;grid-template-columns:1fr;gap:18px;margin-bottom:20px;}"
+"@media(min-width:768px){.grid{grid-template-columns:1fr 1fr;}}"
+".card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;display:flex;flex-direction:column;}"
+".chdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}"
+".chdr h2{font-size:16px;font-weight:600;color:#fff;}"
+".chip{font-size:10px;padding:3px 8px;border-radius:6px;font-weight:600;}"
+".chip-s{background:#1e3a8a;color:#93c5fd;}"
+".chip-e{background:#3b0764;color:#d8b4fe;}"
+".desc{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.4;flex-grow:1;}"
+".fbox{border:2px dashed var(--border);border-radius:8px;padding:14px;text-align:center;cursor:pointer;margin-bottom:14px;transition:0.2s;}"
+".fbox:hover{border-color:var(--cyan);background:rgba(6,182,212,0.06);}"
+".fbox input{display:none;}"
+".fbox .ltxt{font-size:12px;color:var(--muted);}"
+".btn{width:100%;padding:11px;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;transition:0.2s;}"
+".btn-pri{background:var(--cyan);color:#082f49;}"
+".btn-pri:hover:not(:disabled){background:var(--cyan-h);}"
+".btn-pri:disabled{opacity:0.5;cursor:not-allowed;}"
+".btn-ext{background:#334155;color:#f8fafc;margin-top:10px;}"
+".btn-ext:hover{background:#475569;}"
+".pwrap{margin-top:12px;display:none;}"
+".pbar{background:#0f172a;height:10px;border-radius:9999px;overflow:hidden;}"
+".pfill{background:linear-gradient(90deg,#06b6d4,#10b981);height:100%;width:0%;transition:width 0.25s;}"
+".ptxt{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px;}"
+".toast{margin-top:10px;padding:9px;border-radius:7px;font-size:11px;display:none;line-height:1.4;}"
+".toast.ok{background:rgba(16,185,129,0.15);border:1px solid var(--green);color:#6ee7b7;}"
+".toast.err{background:rgba(239,68,68,0.15);border:1px solid var(--red);color:#fca5a5;}"
+"</style>"
+"</head>"
+"<body>"
+"<div class=\"wrap\">"
+"<div class=\"hdr\">"
+"<div><h1>Portal Update Firmware OTA</h1><p>Mesin Absensi RFID Gateway &bull; SoftAP Mode (192.168.4.1)</p></div>"
+"<span class=\"badge\">&#9679; SoftAP Siap</span>"
+"</div>"
+"<div class=\"warn\"><div class=\"ico\">&#9888;</div><div>"
+"<h3>PERINGATAN OPERATOR LAPANGAN</h3>"
+"<p>Jangan mematikan atau mencabut daya mesin saat proses flashing berlangsung! Tunggu hingga proses 100% dan status sukses ditampilkan.</p>"
+"</div></div>"
+"<div class=\"guide\"><h4>Petunjuk Penggunaan:</h4><ol>"
+"<li>Siapkan file binary berekstensi <b>.bin</b> (firmware hasil build STM32 atau ESP32).</li>"
+"<li>Pilih kotak file pada card yang sesuai, lalu tekan tombol <b>Mulai Update</b>.</li>"
+"<li>Pantau bar progres di browser ini dan layar LCD mesin absensi.</li>"
+"<li>Setelah selesai, tekan <b>Kembali ke Mode Normal (Client)</b> di bawah.</li>"
+"</ol></div>"
+"<div class=\"grid\">"
+"<div class=\"card\">"
+"<div class=\"chdr\"><h2>STM32 Main MCU</h2><span class=\"chip chip-s\">STM32F405</span></div>"
+"<p class=\"desc\">Mengontrol UI Display LVGL 480x320, RFID Reader CLRC663, MicroSD FatFS, dan antrean data lokal. Update via ROM Bootloader UART.</p>"
+"<div class=\"fbox\" onclick=\"document.getElementById('f-s').click()\">"
+"<input type=\"file\" id=\"f-s\" accept=\".bin\" onchange=\"onF(this,'l-s','b-s')\">"
+"<div class=\"ltxt\" id=\"l-s\">&#128190; Pilih File <b>firmware_stm32.bin</b></div>"
+"</div>"
+"<button class=\"btn btn-pri\" id=\"b-s\" disabled onclick=\"upF('stm32')\">&#9654; Mulai Update STM32</button>"
+"<div class=\"pwrap\" id=\"pw-stm32\"><div class=\"pbar\"><div class=\"pfill\" id=\"pf-stm32\"></div></div>"
+"<div class=\"ptxt\"><span id=\"ps-stm32\">Mengunggah...</span><span id=\"pp-stm32\">0%</span></div></div>"
+"<div class=\"toast\" id=\"t-stm32\"></div>"
+"</div>"
+"<div class=\"card\">"
+"<div class=\"chdr\"><h2>ESP32-C6 Co-MCU</h2><span class=\"chip chip-e\">ESP32-C6 Wi-Fi 6</span></div>"
+"<p class=\"desc\">Mengontrol koneksi Wi-Fi 6/4, protokol sinkronisasi HTTP backend, dan Web Server OTA. Update via native dual-partition OTA.</p>"
+"<div class=\"fbox\" onclick=\"document.getElementById('f-e').click()\">"
+"<input type=\"file\" id=\"f-e\" accept=\".bin\" onchange=\"onF(this,'l-e','b-e')\">"
+"<div class=\"ltxt\" id=\"l-e\">&#128190; Pilih File <b>firmware_esp32.bin</b></div>"
+"</div>"
+"<button class=\"btn btn-pri\" id=\"b-e\" disabled onclick=\"upF('esp32')\">&#9654; Mulai Update ESP32</button>"
+"<div class=\"pwrap\" id=\"pw-esp32\"><div class=\"pbar\"><div class=\"pfill\" id=\"pf-esp32\"></div></div>"
+"<div class=\"ptxt\"><span id=\"ps-esp32\">Mengunggah...</span><span id=\"pp-esp32\">0%</span></div></div>"
+"<div class=\"toast\" id=\"t-esp32\"></div>"
+"</div>"
+"</div>"
+"<button class=\"btn btn-ext\" onclick=\"exitSta()\">&#10005; Selesai & Kembali ke Mode Client (Station)</button>"
+"</div>"
+"<script>"
+"function onF(i,l,b){if(i.files&&i.files[0]){var f=i.files[0];document.getElementById(l).innerHTML='<b>'+f.name+'</b> ('+(f.size/1024).toFixed(1)+' KB)';document.getElementById(b).disabled=false;}}"
+"var pollTimer=null;"
+"function pollSTM32(){"
+"  fetch('/api/flash_status').then(function(r){return r.json();}).then(function(d){"
+"    var pf=document.getElementById('pf-stm32'),pp=document.getElementById('pp-stm32'),ps=document.getElementById('ps-stm32'),tt=document.getElementById('t-stm32'),b=document.getElementById('b-s');"
+"    if(d.progress!==undefined){pf.style.width=d.progress+'%';pp.innerText=d.progress+'%';}"
+"    if(d.message){ps.innerText=d.message;}"
+"    if(d.state==='success'){"
+"      clearInterval(pollTimer);"
+"      pf.style.width='100%';pp.innerText='100%';ps.innerText='Selesai!';"
+"      tt.className='toast ok';tt.innerText=d.message;tt.style.display='block';"
+"    }else if(d.state==='error'){"
+"      clearInterval(pollTimer);"
+"      tt.className='toast err';tt.innerText='GAGAL: '+d.message;tt.style.display='block';b.disabled=false;"
+"    }"
+"  }).catch(function(e){console.log('Poll error',e);});"
+"}"
+"function upF(t){"
+"  var fi=document.getElementById(t==='stm32'?'f-s':'f-e');if(!fi.files||!fi.files[0])return;var f=fi.files[0];"
+"  if(!confirm('Flash '+t.toUpperCase()+' dengan file \"'+f.name+'\"?\\n\\nPERINGATAN: Jangan mematikan daya mesin!'))return;"
+"  var b=document.getElementById(t==='stm32'?'b-s':'b-e'),pw=document.getElementById('pw-'+t),pf=document.getElementById('pf-'+t),pp=document.getElementById('pp-'+t),ps=document.getElementById('ps-'+t),tt=document.getElementById('t-'+t);"
+"  b.disabled=true;pw.style.display='block';tt.style.display='none';pf.style.width='0%';pp.innerText='0%';ps.innerText='Mengunggah file ke gateway...';"
+"  var x=new XMLHttpRequest();x.open('POST','/update/'+t,true);"
+"  x.upload.onprogress=function(e){if(e.lengthComputable){var p=Math.round((e.loaded/e.total)*(t==='stm32'?10:90));pf.style.width=p+'%';pp.innerText=p+'%';if(t==='stm32'&&p>=10)ps.innerText='File tersimpan di gateway. Mempersiapkan flash STM32...';}};"
+"  x.onload=function(){"
+"    if(x.status===200){"
+"      if(t==='stm32'){"
+"        ps.innerText='Memulai penghapusan & pemrograman flash STM32...';"
+"        pollTimer=setInterval(pollSTM32,600);"
+"      }else{"
+"        pf.style.width='100%';pp.innerText='100%';ps.innerText='Selesai!';"
+"        tt.className='toast ok';tt.innerText='SUKSES: Firmware ESP32 berhasil di-flash! ESP32 akan reboot otomatis.';tt.style.display='block';"
+"      }"
+"    }else{tt.className='toast err';tt.innerText='GAGAL: '+x.responseText;tt.style.display='block';b.disabled=false;}"
+"  };"
+"  x.onerror=function(){tt.className='toast err';tt.innerText='GAGAL: Terjadi gangguan jaringan saat mengunggah!';tt.style.display='block';b.disabled=false;};"
+"  x.send(f);"
+"}"
+"function exitSta(){if(confirm('Kembali ke mode Wi-Fi Client (Station) dan menutup portal OTA?')){fetch('/api/mode',{method:'POST',body:'mode=sta'}).then(function(){alert('Portal OTA ditutup. Mesin kembali ke mode normal.');}).catch(function(){alert('Perintah terkirim.');});}}"
+"</script>"
+"</body>"
+"</html>";
+
+/* ========================================================================== */
+/*                           HTTP SERVER HANDLERS                             */
+/* ========================================================================== */
+
+static esp_err_t ota_web_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, ota_html_page, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t ota_update_stm32_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Receiving STM32 Firmware upload (Size: %d bytes)...", (int)req->content_len);
+    if (req->content_len <= 0 || req->content_len > 1024 * 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Ukuran file tidak valid (Maksimal 1 MB).");
+        return ESP_FAIL;
+    }
+
+    if (s_flash_state == FLASH_STATE_ERASING || s_flash_state == FLASH_STATE_PROGRAMMING) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Proses flashing lain sedang berlangsung.");
+        return ESP_FAIL;
+    }
+
+    const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+    if (!part) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Partisi staging flash ota_1 tidak ditemukan!");
+        return ESP_FAIL;
+    }
+
+    /* Erase partisi staging secukupnya */
+    size_t erase_size = (req->content_len + 4095) & (~4095);
+    if (esp_partition_erase_range(part, 0, erase_size) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal mengosongkan partisi staging.");
+        return ESP_FAIL;
+    }
+
+    s_flash_state = FLASH_STATE_UPLOADING;
+    s_flash_progress = 0;
+    snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Mengunggah firmware ke gateway...");
+
+    char rx_buf[1024];
+    size_t total_size = req->content_len;
+    size_t received_size = 0;
+
+    while (received_size < total_size) {
+        size_t to_recv = sizeof(rx_buf);
+        if (to_recv > (total_size - received_size)) {
+            to_recv = total_size - received_size;
+        }
+
+        int ret = httpd_req_recv(req, rx_buf, to_recv);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGE(TAG, "Upload receive failed: %d", ret);
+            s_flash_state = FLASH_STATE_ERROR;
+            snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "Koneksi terputus saat mengunggah file.");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Koneksi terputus saat mengunggah file.");
+            return ESP_FAIL;
+        }
+
+        if (esp_partition_write(part, received_size, rx_buf, ret) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed writing to staging partition!");
+            s_flash_state = FLASH_STATE_ERROR;
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal menulis ke partisi flash staging.");
+            return ESP_FAIL;
+        }
+
+        received_size += ret;
+    }
+
+    s_staged_firmware_size = received_size;
+    s_flash_state = FLASH_STATE_READY;
+    s_flash_progress = 5;
+    snprintf(s_flash_status_msg, sizeof(s_flash_status_msg), "File firmware diterima (%u KB). Memulai flash STM32...", (unsigned int)(s_staged_firmware_size / 1024));
+
+    /* Luncurkan task flashing di background */
+    xTaskCreate(stm32_flasher_task, "stm32_flash", 4096, NULL, 5, NULL);
+
+    const char *resp = "{\"success\":true,\"message\":\"File firmware berhasil diunggah. Flashing STM32 sedang berjalan di background.\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static void delayed_restart_task(void *pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(1800));
+    esp_restart();
+}
+
+static esp_err_t ota_update_esp32_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Starting ESP32 Native OTA Update (Size: %d bytes)...", (int)req->content_len);
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Partisi OTA tidak ditemukan pada layout flash!");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t update_handle = 0;
+    esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal menginisialisasi partisi OTA ESP32.");
+        return ESP_FAIL;
+    }
+
+    char ota_write_data[1024];
+    size_t total_size = req->content_len;
+    size_t received_size = 0;
+    int last_pct = -1;
+
+    while (received_size < total_size) {
+        size_t to_recv = sizeof(ota_write_data);
+        if (to_recv > (total_size - received_size)) {
+            to_recv = total_size - received_size;
+        }
+
+        int ret = httpd_req_recv(req, ota_write_data, to_recv);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGE(TAG, "HTTP receive failed: %d", ret);
+            esp_ota_abort(update_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Koneksi terputus saat mengunduh data firmware ESP32.");
+            return ESP_FAIL;
+        }
+
+        err = esp_ota_write(update_handle, (const void *)ota_write_data, ret);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write failed (%s)", esp_err_to_name(err));
+            esp_ota_abort(update_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal menulis blok partisi OTA ESP32!");
+            return ESP_FAIL;
+        }
+
+        received_size += ret;
+        int pct = (int)((received_size * 100) / total_size);
+        if (pct != last_pct && (pct % 5 == 0 || pct == 100)) {
+            last_pct = pct;
+            char uart_buf[64];
+            snprintf(uart_buf, sizeof(uart_buf), "OTA_PROGRESS:%d|Mengisi partisi ESP32...\n", pct);
+            uart_send_and_log(uart_buf);
+        }
+    }
+
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end failed (%s)", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Validasi image OTA ESP32 gagal.");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal mengalihkan partisi boot aktif.");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "ESP32 OTA Update complete! Rebooting soon...");
+    uart_send_and_log("OTA_PROGRESS:100|Pembaruan ESP32 sukses! Rebooting...\n");
+
+    const char *resp = "{\"success\":true,\"message\":\"Firmware ESP32 berhasil di-update! Sistem akan reboot dalam 2 detik.\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+
+    xTaskCreate(delayed_restart_task, "delayed_restart", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t ota_api_flash_status_get_handler(httpd_req_t *req) {
+    char json[256];
+    const char *st_str = "idle";
+    if (s_flash_state == FLASH_STATE_UPLOADING) st_str = "uploading";
+    else if (s_flash_state == FLASH_STATE_READY) st_str = "ready";
+    else if (s_flash_state == FLASH_STATE_ERASING) st_str = "erasing";
+    else if (s_flash_state == FLASH_STATE_PROGRAMMING) st_str = "programming";
+    else if (s_flash_state == FLASH_STATE_SUCCESS) st_str = "success";
+    else if (s_flash_state == FLASH_STATE_ERROR) st_str = "error";
+
+    snprintf(json, sizeof(json),
+             "{\"state\":\"%s\",\"progress\":%d,\"message\":\"%s\"}",
+             st_str, s_flash_progress, s_flash_status_msg);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t ota_api_status_get_handler(httpd_req_t *req) {
+    char status_json[256];
+    snprintf(status_json, sizeof(status_json),
+             "{\"device_code\":\"%s\",\"device_name\":\"%s\",\"mode\":\"%s\",\"free_heap\":%lu}",
+             s_device_code, s_device_name, s_is_ap_mode ? "SoftAP" : "Station",
+             (unsigned long)esp_get_free_heap_size());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, status_json, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static void wifi_switch_to_sta(void);
+
+static esp_err_t ota_api_mode_post_handler(httpd_req_t *req) {
+    const char *resp = "{\"status\":\"ok\",\"message\":\"Beralih ke mode Client (Station)...\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+
+    wifi_switch_to_sta();
+    return ESP_OK;
+}
+
+static void start_web_server(void) {
+    if (s_http_server) return;
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    config.ctrl_port = 32768;
+    config.max_open_sockets = 7;
+    config.stack_size = 10240;
+    config.lru_purge_enable = true;
+    config.recv_wait_timeout = 30; // 30 detik
+    config.send_wait_timeout = 30; // 30 detik
+
+    httpd_uri_t uri_get_index = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = ota_web_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_post_update_stm32 = {
+        .uri = "/update/stm32",
+        .method = HTTP_POST,
+        .handler = ota_update_stm32_post_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_post_update_esp32 = {
+        .uri = "/update/esp32",
+        .method = HTTP_POST,
+        .handler = ota_update_esp32_post_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_flash_status = {
+        .uri = "/api/flash_status",
+        .method = HTTP_GET,
+        .handler = ota_api_flash_status_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_status = {
+        .uri = "/api/status",
+        .method = HTTP_GET,
+        .handler = ota_api_status_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_post_mode = {
+        .uri = "/api/mode",
+        .method = HTTP_POST,
+        .handler = ota_api_mode_post_handler,
+        .user_ctx = NULL
+    };
+
+    if (httpd_start(&s_http_server, &config) == ESP_OK) {
+        httpd_register_uri_handler(s_http_server, &uri_get_index);
+        httpd_register_uri_handler(s_http_server, &uri_post_update_stm32);
+        httpd_register_uri_handler(s_http_server, &uri_post_update_esp32);
+        httpd_register_uri_handler(s_http_server, &uri_get_flash_status);
+        httpd_register_uri_handler(s_http_server, &uri_get_status);
+        httpd_register_uri_handler(s_http_server, &uri_post_mode);
+        ESP_LOGI(TAG, "OTA Web Server started on port 80!");
+    } else {
+        ESP_LOGE(TAG, "Failed to start OTA Web Server!");
+    }
+}
+
+static void stop_web_server(void) {
+    if (s_http_server) {
+        httpd_stop(s_http_server);
+        s_http_server = NULL;
+        ESP_LOGI(TAG, "OTA Web Server stopped.");
+    }
+}
+
+
+static void wifi_switch_to_ap(void) {
+    if (s_is_ap_mode) return;
+
+    ESP_LOGI(TAG, "Switching to SoftAP mode for OTA Web Server...");
+    esp_wifi_stop();
+
+    if (!s_ap_netif) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+    }
+
+    wifi_config_t ap_config = {
+        .ap = {
+            .ssid_len = 0,
+            .channel = 1,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+            .ssid_hidden = 0,
+            .max_connection = 4,
+            .beacon_interval = 100,
+        },
+    };
+    snprintf((char *)ap_config.ap.ssid, sizeof(ap_config.ap.ssid), "ABSENSI-OTA-%.19s", s_device_code);
+    strncpy((char *)ap_config.ap.password, "12345678", sizeof(ap_config.ap.password));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    s_is_ap_mode = true;
+    set_led_color(16, 8, 0); /* Amber LED tanda SoftAP aktif */
+
+    start_web_server();
+
+    /* Kirim balasan aktif ke STM32 via UART */
+    char reply[128];
+    snprintf(reply, sizeof(reply), "AP_ACTIVE:%s|12345678|192.168.4.1\n", ap_config.ap.ssid);
+    uart_send_and_log(reply);
+}
+
+static void wifi_switch_to_sta(void) {
+    if (!s_is_ap_mode) return;
+
+    ESP_LOGI(TAG, "Switching back to Station (Client) mode...");
+    stop_web_server();
+
+    esp_wifi_stop();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    s_is_ap_mode = false;
+    set_led_color(0, 0, 8);
+
+    uart_send_and_log("STA_ACTIVE\n");
+}
+
 
 static void IRAM_ATTR button_isr_handler(void *arg) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -967,6 +1738,13 @@ static void uart_task(void *pvParameters) {
 
   while (1) {
     esp_task_wdt_reset();
+
+    /* Jika ESP32 sedang mem-flash STM32 via bootloader, jangan baca UART di sini */
+    if (s_flashing_stm32_active) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
     int len =
         uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE - 1, pdMS_TO_TICKS(100));
     if (len > 0) {
@@ -1099,6 +1877,10 @@ static void uart_task(void *pvParameters) {
             } else if (strncmp(rfid_str, "CMD:GET_WIFI_INFO", 17) == 0 ||
                        strncmp(rfid_str, "GET_INFO", 8) == 0) {
               send_wifi_status_info();
+            } else if (strncmp(rfid_str, "CMD:START_AP", 12) == 0) {
+              wifi_switch_to_ap();
+            } else if (strncmp(rfid_str, "CMD:START_STA", 13) == 0) {
+              wifi_switch_to_sta();
             } else if (strncmp(rfid_str, "WIFI:", 5) == 0) {
               char *data = rfid_str + 5;
               /* Bersihkan karakter newline dan carriage return */
@@ -1204,6 +1986,9 @@ void app_main(void) {
   // Hook ISR handler
   gpio_isr_handler_add(BOOT_BUTTON_GPIO, button_isr_handler,
                        (void *)BOOT_BUTTON_GPIO);
+
+  // Initialize STM32 Bootloader & Reset Control Pins (GPIO 21 BOOT0, GPIO 22 NRST)
+  stm32_gpio_init();
 
   // Initialize WiFi first so event group is created
   wifi_init_sta();

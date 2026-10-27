@@ -53,4 +53,8 @@ void ILI9488_DrawBitmapLVGL(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, 
 void ILI9488_SleepIn(void);
 void ILI9488_SleepOut(void);
 
+// Screen orientation functions (0: Landscape normal, 1: Landscape inverted 180 deg)
+void ILI9488_SetRotation(uint8_t rotation);
+uint8_t ILI9488_GetRotation(void);
+
 #endif /* __ILI9488_H */

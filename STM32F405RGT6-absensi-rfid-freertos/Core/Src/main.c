@@ -34,6 +34,7 @@
 #include "xpt2046.h"
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -2701,6 +2702,32 @@ void StartEsp32Task(void *argument) {
         if (mac) strncpy(g_wifi_info.mac, mac, sizeof(g_wifi_info.mac) - 1);
 
         GUI_Attendance_UpdateWifiInfo(&g_wifi_info);
+      } else if (strncmp(uart1_rx_buf, "AP_ACTIVE:", 10) == 0) {
+        /* Format: AP_ACTIVE:<SSID>|<PASS>|<IP> */
+        char *data = uart1_rx_buf + 10;
+        char *nl = strpbrk(data, "\r\n");
+        if (nl) *nl = '\0';
+        char *ssid = strtok(data, "|");
+        char *pass = strtok(NULL, "|");
+        char *ip   = strtok(NULL, "|");
+        GUI_Attendance_ShowOTAModal(true, ssid ? ssid : "ABSENSI-OTA-GATE",
+                                    pass ? pass : "12345678",
+                                    ip ? ip : "192.168.4.1");
+      } else if (strncmp(uart1_rx_buf, "STA_ACTIVE", 10) == 0) {
+        GUI_Attendance_ShowOTAModal(false, NULL, NULL, NULL);
+      } else if (strncmp(uart1_rx_buf, "OTA_PROGRESS:", 13) == 0) {
+        /* Format: OTA_PROGRESS:<PERCENT>|<MESSAGE> */
+        char *data = uart1_rx_buf + 13;
+        char *nl = strpbrk(data, "\r\n");
+        if (nl) *nl = '\0';
+        char *pct_str = strtok(data, "|");
+        char *msg     = strtok(NULL, "|");
+        int pct = pct_str ? atoi(pct_str) : 0;
+        GUI_Attendance_UpdateOTAProgress(pct, msg ? msg : "Sedang memproses...");
+      } else if (strncmp(uart1_rx_buf, "OTA_STM32_START", 15) == 0) {
+        /* ESP32 bersiap mem-flash STM32 via ROM Bootloader pin IO21/IO22 */
+        GUI_Attendance_ShowSTM32FlashingWarning();
+        osDelay(120); /* Beri waktu frame buffer terkirim ke GRAM ILI9488 sebelum NRST di-pull LOW */
       }
     }
 

@@ -8,6 +8,7 @@ extern osSemaphoreId_t spi1TxDmaSemHandle;
 #define DMA_BUFFER_SIZE 1440
 static uint8_t dma_buffer[DMA_BUFFER_SIZE];
 volatile uint8_t spi_dma_complete = 0;
+static uint8_t s_display_rotation = 0;
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
@@ -160,6 +161,9 @@ void ILI9488_Init(void) {
     ILI9488_SendCommand(0x29); // Display on
     ILI9488_CS_HIGH();
     HAL_Delay(25);
+
+    // Apply currently active orientation
+    ILI9488_SetRotation(s_display_rotation);
 }
 
 void ILI9488_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
@@ -364,4 +368,22 @@ void ILI9488_SleepOut(void) {
     ILI9488_SendCommand(0x11); // Exit Sleep Mode
     ILI9488_CS_HIGH();
     HAL_Delay(10);
+}
+
+void ILI9488_SetRotation(uint8_t rotation) {
+    s_display_rotation = (rotation != 0) ? 1 : 0;
+    ILI9488_CS_LOW();
+    ILI9488_SendCommand(0x36); // Memory Access Control
+    if (s_display_rotation == 1) {
+        // Inverted Landscape (180 deg flipped: ports at top): MY=1, MX=1, MV=1, BGR=1
+        ILI9488_SendData(0xE8);
+    } else {
+        // Normal Landscape (ports at bottom): MY=0, MX=0, MV=1, BGR=1
+        ILI9488_SendData(0x28);
+    }
+    ILI9488_CS_HIGH();
+}
+
+uint8_t ILI9488_GetRotation(void) {
+    return s_display_rotation;
 }

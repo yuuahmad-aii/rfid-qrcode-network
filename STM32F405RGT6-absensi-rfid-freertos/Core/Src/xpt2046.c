@@ -15,6 +15,8 @@ extern SPI_HandleTypeDef hspi2;
 #define ILI9488_WIDTH 480
 #define ILI9488_HEIGHT 320
 
+static uint8_t s_touch_rotation = 0;
+
 static void XPT2046_CS_LOW(void) {
   HAL_GPIO_WritePin(SPI2_CS_GPIO_Port, SPI2_CS_Pin, GPIO_PIN_RESET);
 }
@@ -85,9 +87,24 @@ bool XPT2046_GetTouch(uint16_t *x, uint16_t *y) {
   if (cal_y >= ILI9488_HEIGHT)
     cal_y = ILI9488_HEIGHT - 1;
 
-  // Assign to output with inversion
-  *x = ILI9488_WIDTH - cal_x;
-  *y = ILI9488_HEIGHT - cal_y;
+  // Assign to output based on screen orientation
+  if (s_touch_rotation == 1) {
+    // Inverted landscape (180 deg flipped, ports at top)
+    *x = (uint16_t)cal_x;
+    *y = (uint16_t)cal_y;
+  } else {
+    // Normal landscape (ports at bottom)
+    *x = (uint16_t)(ILI9488_WIDTH - 1 - cal_x);
+    *y = (uint16_t)(ILI9488_HEIGHT - 1 - cal_y);
+  }
 
   return true;
+}
+
+void XPT2046_SetRotation(uint8_t rotation) {
+  s_touch_rotation = (rotation != 0) ? 1 : 0;
+}
+
+uint8_t XPT2046_GetRotation(void) {
+  return s_touch_rotation;
 }
