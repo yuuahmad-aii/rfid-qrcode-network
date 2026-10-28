@@ -82,14 +82,17 @@ static lv_obj_t * lbl_status          = NULL;
 
 static lv_obj_t * card_summary        = NULL;
 static lv_obj_t * lbl_sum_title       = NULL;
-static lv_obj_t * lbl_total_title     = NULL;
-static lv_obj_t * lbl_total_val       = NULL;
-static lv_obj_t * lbl_total_unit      = NULL;
+static lv_obj_t * btn_attend_modes[ATTEND_MODE_MAX] = {0};
+static lv_obj_t * lbl_attend_modes[ATTEND_MODE_MAX] = {0};
+static lv_obj_t * div_summary_line   = NULL;
 static lv_obj_t * lbl_date_title      = NULL;
 static lv_obj_t * lbl_date_val        = NULL;
-static lv_obj_t * lbl_last_title      = NULL;
-static lv_obj_t * lbl_last_val        = NULL;
+static lv_obj_t * lbl_mode_hint       = NULL;
 static lv_obj_t * corner_hint_dot     = NULL;
+
+/* Variable Mode Presensi (Default: MASUK) */
+volatile attend_mode_t g_current_attend_mode = ATTEND_MODE_MASUK;
+static uint32_t s_mode_select_tick = 0;
 
 /* Widgets Layar Password (screen_password) */
 static lv_obj_t * box_pin_container   = NULL;
@@ -150,6 +153,10 @@ static lv_obj_t * lbl_rotation_t      = NULL;
 static lv_obj_t * btn_rotation_toggle = NULL;
 static lv_obj_t * lbl_rotation_val    = NULL;
 static lv_obj_t * lbl_rotation_hint   = NULL;
+
+/* Anti-Passback Dropdown */
+static lv_obj_t * lbl_apb_title       = NULL;
+static lv_obj_t * dropdown_antipassback = NULL;
 
 static lv_obj_t * card_sistem_act     = NULL;
 static lv_obj_t * lbl_sec_act_t       = NULL;
@@ -314,6 +321,10 @@ static void dropdown_lpcd_interval_cb(lv_event_t * e);
 static void btn_refresh_users_cb(lv_event_t * e);
 static void btn_refresh_info_cb(lv_event_t * e);
 static void btn_data_switch_cb(lv_event_t * e);
+static void dropdown_antipassback_cb(lv_event_t * e);
+static void btn_attend_mode_cb(lv_event_t * e);
+static void tabview_admin_change_cb(lv_event_t * e);
+static void update_attend_mode_buttons_ui(void);
 
 /* Diagnostic Callbacks */
 static void btn_diag_beep_cb(lv_event_t * e);
@@ -353,6 +364,7 @@ void App_Settings_ResetDefaults(app_settings_t *s)
     s->lpcd_delta         = 3;   /* Default: 3 (Sensitivitas Optimal) */
     s->lpcd_interval_ms   = 300; /* Default: 300 ms */
     s->screen_rotation    = 0;   /* Default: 0 (Normal: Port Bawah) */
+    s->antipassback_sec   = 60;  /* Default: 60 detik (1 Menit) */
 }
 
 bool App_Settings_Load(app_settings_t *out)
@@ -371,6 +383,7 @@ bool App_Settings_Load(app_settings_t *out)
         strncpy(out->wifi_ssid, flash_cfg->wifi_ssid, sizeof(out->wifi_ssid) - 1);
         strncpy(out->wifi_pass, flash_cfg->wifi_pass, sizeof(out->wifi_pass) - 1);
         strncpy(out->server_ip, flash_cfg->server_ip, sizeof(out->server_ip) - 1);
+        out->antipassback_sec = 60;
         App_Settings_Save(out);
         return true;
     }
@@ -392,6 +405,10 @@ bool App_Settings_Load(app_settings_t *out)
     }
 
     *out = *flash_cfg;
+
+    if (out->antipassback_sec > 600) {
+        out->antipassback_sec = 60;
+    }
 
     /* Jika device_code masih berupa default lama GATE-001 atau kosong, otomatis perbarui ke UID unik */
     if (out->device_code[0] == '\0' || strcmp(out->device_code, "GATE-001") == 0) {
@@ -634,7 +651,7 @@ static void build_screen_main(void)
 
     /* Badge Status RFID */
     badge_rfid = lv_obj_create(header_main);
-    lv_obj_set_pos(badge_rfid, 135, 2);
+    lv_obj_set_pos(badge_rfid, 236, 2);
     lv_obj_set_size(badge_rfid, 75, 24);
     lv_obj_set_style_bg_color(badge_rfid, lv_color_hex(0x064E3B), 0);
     lv_obj_set_style_border_color(badge_rfid, lv_color_hex(COLOR_GREEN_STATUS), 0);
@@ -651,7 +668,7 @@ static void build_screen_main(void)
 
     /* Badge Status Wi-Fi */
     badge_wifi = lv_obj_create(header_main);
-    lv_obj_set_pos(badge_wifi, 218, 2);
+    lv_obj_set_pos(badge_wifi, 317, 2);
     lv_obj_set_size(badge_wifi, 76, 24);
     lv_obj_set_style_bg_color(badge_wifi, lv_color_hex(0x450A0A), 0);
     lv_obj_set_style_border_color(badge_wifi, lv_color_hex(COLOR_RED_STATUS), 0);
@@ -668,7 +685,7 @@ static void build_screen_main(void)
 
     /* Badge Status SD Card */
     badge_sd = lv_obj_create(header_main);
-    lv_obj_set_pos(badge_sd, 302, 2);
+    lv_obj_set_pos(badge_sd, 398, 2);
     lv_obj_set_size(badge_sd, 72, 24);
     lv_obj_set_style_bg_color(badge_sd, lv_color_hex(0x450A0A), 0);
     lv_obj_set_style_border_color(badge_sd, lv_color_hex(COLOR_RED_STATUS), 0);
@@ -682,13 +699,6 @@ static void build_screen_main(void)
     lv_label_set_text(lbl_badge_sd, "SD: ERR");
     lv_obj_set_style_text_color(lbl_badge_sd, lv_color_hex(COLOR_RED_STATUS), 0);
     lv_obj_set_style_text_font(lbl_badge_sd, &lv_font_montserrat_14, 0);
-
-    /* Jam Digital Header */
-    lbl_clock_main = lv_label_create(header_main);
-    lv_obj_set_pos(lbl_clock_main, 388, 3);
-    lv_label_set_text(lbl_clock_main, "00:00:00");
-    lv_obj_set_style_text_color(lbl_clock_main, lv_color_hex(COLOR_AMBER_STATUS), 0);
-    lv_obj_set_style_text_font(lbl_clock_main, &lv_font_montserrat_16, 0);
 
     /* 2. CARD TAP HERO (Kiri: x: 12, y: 48, w: 295, h: 260) */
     card_hero = lv_obj_create(screen_main);
@@ -782,71 +792,79 @@ static void build_screen_main(void)
     lv_obj_remove_flag(card_summary, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_sum_title = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_sum_title, 0, 4);
-    lv_obj_set_width(lbl_sum_title, 135);
-    lv_label_set_text(lbl_sum_title, "RINGKASAN");
+    lv_obj_set_pos(lbl_sum_title, 0, 2);
+    lv_obj_set_width(lbl_sum_title, 139);
+    lv_label_set_text(lbl_sum_title, "PILIH KEPERLUAN");
     lv_obj_set_style_text_align(lbl_sum_title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_sum_title, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
-    lv_obj_set_style_text_font(lbl_sum_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_sum_title, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_sum_title, &lv_font_montserrat_12, 0);
 
-    /* Total Hadir */
-    lbl_total_title = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_total_title, 0, 32);
-    lv_obj_set_width(lbl_total_title, 135);
-    lv_label_set_text(lbl_total_title, "TOTAL HADIR");
-    lv_obj_set_style_text_align(lbl_total_title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_total_title, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl_total_title, &lv_font_montserrat_14, 0);
+    /* 6 Tombol Mode Presensi: Masuk, Istirahat Mulai, Istirahat Selesai, Pulang, Izin Keluar, Izin Masuk */
+    const char *mode_btn_labels[ATTEND_MODE_MAX] = {
+        "MASUK",
+        "ISTIRAHAT MULAI",
+        "ISTIRAHAT SELESAI",
+        "PULANG",
+        "IZIN KELUAR",
+        "IZIN MASUK"
+    };
 
-    lbl_total_val = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_total_val, 0, 56);
-    lv_obj_set_width(lbl_total_val, 135);
-    lv_label_set_text(lbl_total_val, "0");
-    lv_obj_set_style_text_align(lbl_total_val, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_total_val, lv_color_hex(COLOR_CYAN_TEXT), 0);
-    lv_obj_set_style_text_font(lbl_total_val, &lv_font_montserrat_22, 0);
+    for (int i = 0; i < ATTEND_MODE_MAX; i++) {
+        btn_attend_modes[i] = lv_button_create(card_summary);
+        lv_obj_set_pos(btn_attend_modes[i], 0, 18 + (i * 25));
+        lv_obj_set_size(btn_attend_modes[i], 139, 23);
+        lv_obj_set_style_radius(btn_attend_modes[i], 5, 0);
+        lv_obj_set_style_pad_all(btn_attend_modes[i], 0, 0);
+        lv_obj_set_style_border_width(btn_attend_modes[i], 1, 0);
+        lv_obj_add_event_cb(btn_attend_modes[i], btn_attend_mode_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
 
-    lbl_total_unit = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_total_unit, 0, 88);
-    lv_obj_set_width(lbl_total_unit, 135);
-    lv_label_set_text(lbl_total_unit, "Orang");
-    lv_obj_set_style_text_align(lbl_total_unit, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_total_unit, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
-    lv_obj_set_style_text_font(lbl_total_unit, &lv_font_montserrat_14, 0);
+        lbl_attend_modes[i] = lv_label_create(btn_attend_modes[i]);
+        lv_obj_center(lbl_attend_modes[i]);
+        lv_label_set_text(lbl_attend_modes[i], mode_btn_labels[i]);
+        lv_obj_set_style_text_font(lbl_attend_modes[i], &lv_font_montserrat_12, 0);
+    }
+    update_attend_mode_buttons_ui();
+
+    /* Pembatas garis */
+    div_summary_line = lv_obj_create(card_summary);
+    lv_obj_set_pos(div_summary_line, 0, 172);
+    lv_obj_set_size(div_summary_line, 139, 1);
+    lv_obj_set_style_bg_color(div_summary_line, lv_color_hex(COLOR_DARK_BORDER), 0);
+    lv_obj_set_style_border_width(div_summary_line, 0, 0);
 
     /* Tanggal */
     lbl_date_title = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_date_title, 0, 120);
-    lv_obj_set_width(lbl_date_title, 135);
+    lv_obj_set_pos(lbl_date_title, 0, 176);
+    lv_obj_set_width(lbl_date_title, 139);
     lv_label_set_text(lbl_date_title, "TANGGAL");
     lv_obj_set_style_text_align(lbl_date_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(lbl_date_title, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
-    lv_obj_set_style_text_font(lbl_date_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_date_title, &lv_font_montserrat_12, 0);
 
     lbl_date_val = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_date_val, 0, 140);
-    lv_obj_set_width(lbl_date_val, 135);
-    lv_label_set_text(lbl_date_val, "2026-10-17");
+    lv_obj_set_pos(lbl_date_val, 0, 192);
+    lv_obj_set_width(lbl_date_val, 139);
+    lv_label_set_text(lbl_date_val, "2026-10-28");
     lv_obj_set_style_text_align(lbl_date_val, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(lbl_date_val, lv_color_hex(COLOR_DARK_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl_date_val, &lv_font_montserrat_14, 0);
 
-    /* Transaksi Terakhir */
-    lbl_last_title = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_last_title, 0, 172);
-    lv_obj_set_width(lbl_last_title, 135);
-    lv_label_set_text(lbl_last_title, "TERAKHIR");
-    lv_obj_set_style_text_align(lbl_last_title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_last_title, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
-    lv_obj_set_style_text_font(lbl_last_title, &lv_font_montserrat_14, 0);
+    /* Jam Digital (dipindahkan dari navbar ke bawah tanggal) */
+    lbl_clock_main = lv_label_create(card_summary);
+    lv_obj_set_pos(lbl_clock_main, 0, 214);
+    lv_obj_set_width(lbl_clock_main, 139);
+    lv_label_set_text(lbl_clock_main, "00:00:00 WIB");
+    lv_obj_set_style_text_align(lbl_clock_main, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(lbl_clock_main, lv_color_hex(COLOR_AMBER_STATUS), 0);
+    lv_obj_set_style_text_font(lbl_clock_main, &lv_font_montserrat_16, 0);
 
-    lbl_last_val = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_last_val, 0, 194);
-    lv_obj_set_width(lbl_last_val, 135);
-    lv_label_set_text(lbl_last_val, "--:--:--");
-    lv_obj_set_style_text_align(lbl_last_val, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_last_val, lv_color_hex(COLOR_AMBER_STATUS), 0);
-    lv_obj_set_style_text_font(lbl_last_val, &lv_font_montserrat_14, 0);
+    lbl_mode_hint = lv_label_create(card_summary);
+    lv_obj_set_pos(lbl_mode_hint, 0, 238);
+    lv_obj_set_width(lbl_mode_hint, 139);
+    lv_label_set_text(lbl_mode_hint, "(Default: Masuk)");
+    lv_obj_set_style_text_align(lbl_mode_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(lbl_mode_hint, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+    lv_obj_set_style_text_font(lbl_mode_hint, &lv_font_montserrat_12, 0);
 
     /* Subtle indicator dot di pojok kanan bawah (petunjuk sentuh admin) */
     corner_hint_dot = lv_obj_create(screen_main);
@@ -1041,6 +1059,7 @@ static void build_screen_admin(void)
     tab_data       = lv_tabview_add_tab(tabview_admin, "DATA");
     tab_diagnostik = lv_tabview_add_tab(tabview_admin, "DIAGNOSTIK");
     tab_info       = lv_tabview_add_tab(tabview_admin, "INFO DEV");
+    lv_obj_add_event_cb(tabview_admin, tabview_admin_change_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* ====================================================================== */
     /* TAB 1: SISTEM (LEBIH LEGA, 10px SPACING, NYAMAN DISENTUH)              */
@@ -1127,9 +1146,9 @@ static void build_screen_admin(void)
     lv_obj_set_style_text_color(lbl_device_feedback, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_device_feedback, &lv_font_montserrat_14, 0);
 
-    /* Panel 2: Display, Rotasi & Sensor LPCD RFID (Tinggi diperbesar dari 176 -> 208) */
+    /* Panel 2: Display, Rotasi & Sensor LPCD RFID (Tinggi 252 untuk menampung Anti-Passback) */
     card_sistem_disp = lv_obj_create(tab_sistem);
-    lv_obj_set_size(card_sistem_disp, 456, 208);
+    lv_obj_set_size(card_sistem_disp, 456, 252);
     lv_obj_set_style_radius(card_sistem_disp, 10, 0);
     lv_obj_set_style_pad_all(card_sistem_disp, 10, 0);
     lv_obj_remove_flag(card_sistem_disp, LV_OBJ_FLAG_SCROLLABLE);
@@ -1235,6 +1254,31 @@ static void build_screen_admin(void)
     lv_dropdown_set_options(dropdown_lpcd_interval, "150 ms\n250 ms\n300 ms (Optimal)\n500 ms (Hemat Daya)");
     lv_dropdown_set_selected(dropdown_lpcd_interval, 2);
     lv_obj_add_event_cb(dropdown_lpcd_interval, dropdown_lpcd_interval_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Baris 5: Anti-Passback Cerdas */
+    lbl_apb_title = lv_label_create(card_sistem_disp);
+    lv_obj_set_pos(lbl_apb_title, 0, 204);
+    lv_label_set_text(lbl_apb_title, "Anti-Pass:");
+    lv_obj_set_style_text_font(lbl_apb_title, &lv_font_montserrat_14, 0);
+
+    dropdown_antipassback = lv_dropdown_create(card_sistem_disp);
+    lv_obj_set_pos(dropdown_antipassback, 92, 196);
+    lv_obj_set_size(dropdown_antipassback, 338, 34);
+    lv_dropdown_set_options(dropdown_antipassback,
+        "Nonaktif (0 Detik)\n15 Detik\n30 Detik\n60 Detik (1 Menit)\n2 Menit (120 Detik)\n5 Menit\n10 Menit");
+    uint16_t apb_idx = 3;
+    switch (g_app_settings.antipassback_sec) {
+        case 0: apb_idx = 0; break;
+        case 15: apb_idx = 1; break;
+        case 30: apb_idx = 2; break;
+        case 60: apb_idx = 3; break;
+        case 120: apb_idx = 4; break;
+        case 300: apb_idx = 5; break;
+        case 600: apb_idx = 6; break;
+        default: apb_idx = 3; break;
+    }
+    lv_dropdown_set_selected(dropdown_antipassback, apb_idx);
+    lv_obj_add_event_cb(dropdown_antipassback, dropdown_antipassback_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* Panel 3: Aksi Cepat Hardware (Tinggi 114 agar tombol dan feedback leluasa tanpa terpotong) */
     card_sistem_act = lv_obj_create(tab_sistem);
@@ -1875,14 +1919,8 @@ void GUI_Attendance_ProcessEvent(const ui_event_t *evt)
         lv_obj_set_style_border_color(card_hero, lv_color_hex(COLOR_AMBER_STATUS), 0);
         lv_obj_set_style_border_color(box_status, lv_color_hex(COLOR_AMBER_STATUS), 0);
 
-        /* Update waktu transaksi terakhir */
-        if (evt->extra[0] != '\0') {
-            lv_label_set_text(lbl_last_val, evt->extra);
-        }
-
-        /* Perbarui counter total */
+        /* Perbarui counter internal */
         g_attendance_total++;
-        lv_label_set_text_fmt(lbl_total_val, "%lu", (unsigned long)g_attendance_total);
 
         /* Mulai timer fallback kembali ke standby */
         if (revert_timer) {
@@ -1895,15 +1933,19 @@ void GUI_Attendance_ProcessEvent(const ui_event_t *evt)
     {
         /* Sukses verifikasi kehadiran dari ESP32 atau database offline MicroSD */
         char msg[72];
+        const char *m_name = GUI_Attendance_GetAttendModeString(g_current_attend_mode);
         if (evt->extra[0] != '\0') {
-            snprintf(msg, sizeof(msg), "HADIR: %.60s", evt->extra);
+            snprintf(msg, sizeof(msg), "[%s] %.48s", m_name, evt->extra);
         } else {
-            snprintf(msg, sizeof(msg), "AKSES DITERIMA");
+            snprintf(msg, sizeof(msg), "[%s] AKSES DITERIMA", m_name);
         }
         lv_label_set_text(lbl_status, msg);
         lv_obj_set_style_text_color(lbl_status, lv_color_hex(COLOR_GREEN_STATUS), 0);
         lv_obj_set_style_border_color(card_hero, lv_color_hex(COLOR_GREEN_STATUS), 0);
         lv_obj_set_style_border_color(box_status, lv_color_hex(COLOR_GREEN_STATUS), 0);
+
+        /* Kembalikan mode ke default MASUK setelah tap berhasil */
+        GUI_Attendance_SetAttendMode(ATTEND_MODE_MASUK);
 
         if (revert_timer) {
             lv_timer_delete(revert_timer);
@@ -1913,17 +1955,33 @@ void GUI_Attendance_ProcessEvent(const ui_event_t *evt)
     }
     else if (evt->type == UI_EVENT_ATTENDANCE_REJECTED)
     {
-        /* Akses ditolak dari ESP32 */
         char msg[72];
-        if (evt->extra[0] != '\0') {
-            snprintf(msg, sizeof(msg), "DITOLAK: %.58s", evt->extra);
+        if (evt->status == 2) {
+            /* Peringatan Anti-Passback Cerdas (User sudah absen sebelumnya) */
+            if (evt->extra[0] != '\0') {
+                snprintf(msg, sizeof(msg), "%.68s", evt->extra);
+            } else {
+                snprintf(msg, sizeof(msg), "Sudah Absen Sebelumnya!");
+            }
+            lv_label_set_text(lbl_status, msg);
+            lv_obj_set_style_text_color(lbl_status, lv_color_hex(COLOR_AMBER_STATUS), 0);
+            lv_obj_set_style_border_color(card_hero, lv_color_hex(COLOR_AMBER_STATUS), 0);
+            lv_obj_set_style_border_color(box_status, lv_color_hex(COLOR_AMBER_STATUS), 0);
         } else {
-            snprintf(msg, sizeof(msg), "KARTU DITOLAK");
+            /* Akses ditolak standar */
+            if (evt->extra[0] != '\0') {
+                snprintf(msg, sizeof(msg), "DITOLAK: %.58s", evt->extra);
+            } else {
+                snprintf(msg, sizeof(msg), "KARTU DITOLAK");
+            }
+            lv_label_set_text(lbl_status, msg);
+            lv_obj_set_style_text_color(lbl_status, lv_color_hex(COLOR_RED_STATUS), 0);
+            lv_obj_set_style_border_color(card_hero, lv_color_hex(COLOR_RED_STATUS), 0);
+            lv_obj_set_style_border_color(box_status, lv_color_hex(COLOR_RED_STATUS), 0);
         }
-        lv_label_set_text(lbl_status, msg);
-        lv_obj_set_style_text_color(lbl_status, lv_color_hex(COLOR_RED_STATUS), 0);
-        lv_obj_set_style_border_color(card_hero, lv_color_hex(COLOR_RED_STATUS), 0);
-        lv_obj_set_style_border_color(box_status, lv_color_hex(COLOR_RED_STATUS), 0);
+
+        /* Kembalikan mode ke default MASUK */
+        GUI_Attendance_SetAttendMode(ATTEND_MODE_MASUK);
 
         if (revert_timer) {
             lv_timer_delete(revert_timer);
@@ -2151,9 +2209,6 @@ void GUI_Attendance_CheckCornerTouch(uint16_t x, uint16_t y)
 void GUI_Attendance_ResetCounter(void)
 {
     g_attendance_total = 0;
-    if (lbl_total_val) {
-        lv_label_set_text(lbl_total_val, "0");
-    }
 
     HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
     osDelay(40);
@@ -2171,6 +2226,11 @@ void GUI_Attendance_CheckSleep(void)
 {
     uint32_t now = HAL_GetTick();
     uint32_t idle_ms = now - g_last_activity_tick;
+
+    /* Auto-reset mode presensi ke MASUK jika sudah 20 detik tidak ada tap */
+    if (g_current_attend_mode != ATTEND_MODE_MASUK && (now - s_mode_select_tick > 20000)) {
+        GUI_Attendance_SetAttendMode(ATTEND_MODE_MASUK);
+    }
 
     /* 1. Auto-timeout Halaman Admin & Halaman PIN: 30 detik tanpa aktivitas sentuh */
     lv_obj_t *act_scr = lv_screen_active();
@@ -2459,12 +2519,11 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_bg_color(card_summary, lv_color_hex(c_card), 0);
         lv_obj_set_style_border_color(card_summary, lv_color_hex(c_border), 0);
     }
-    if (lbl_sum_title) lv_obj_set_style_text_color(lbl_sum_title, lv_color_hex(c_text_mut), 0);
-    if (lbl_total_title) lv_obj_set_style_text_color(lbl_total_title, lv_color_hex(c_text_pri), 0);
-    if (lbl_total_unit) lv_obj_set_style_text_color(lbl_total_unit, lv_color_hex(c_text_mut), 0);
+    if (lbl_sum_title) lv_obj_set_style_text_color(lbl_sum_title, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    update_attend_mode_buttons_ui();
     if (lbl_date_title) lv_obj_set_style_text_color(lbl_date_title, lv_color_hex(c_text_mut), 0);
     if (lbl_date_val) lv_obj_set_style_text_color(lbl_date_val, lv_color_hex(c_text_pri), 0);
-    if (lbl_last_title) lv_obj_set_style_text_color(lbl_last_title, lv_color_hex(c_text_mut), 0);
+    if (lbl_mode_hint) lv_obj_set_style_text_color(lbl_mode_hint, lv_color_hex(c_text_mut), 0);
 
     /* 2. Layar Password (PIN Screen) */
     if (screen_password) lv_obj_set_style_bg_color(screen_password, lv_color_hex(c_bg), 0);
@@ -2568,6 +2627,12 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_bg_color(dropdown_lpcd_interval, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(dropdown_lpcd_interval, lv_color_hex(c_border), 0);
         lv_obj_set_style_text_color(dropdown_lpcd_interval, lv_color_hex(c_text_pri), 0);
+    }
+    if (lbl_apb_title) lv_obj_set_style_text_color(lbl_apb_title, lv_color_hex(c_text_pri), 0);
+    if (dropdown_antipassback) {
+        lv_obj_set_style_bg_color(dropdown_antipassback, lv_color_hex(c_btn_bg), 0);
+        lv_obj_set_style_border_color(dropdown_antipassback, lv_color_hex(c_border), 0);
+        lv_obj_set_style_text_color(dropdown_antipassback, lv_color_hex(c_text_pri), 0);
     }
 
     if (card_sistem_act) {
@@ -2996,13 +3061,7 @@ static void btn_keypad_click_cb(lv_event_t * e)
             g_entered_pin[0] = '\0';
             lv_screen_load(screen_admin);
             Watchdog_KickDirect();
-            load_recent_logs();
-            Watchdog_KickDirect();
             GUI_Attendance_UpdatePendingCount(Storage_GetPendingCount());
-            Watchdog_KickDirect();
-            GUI_Attendance_RefreshUsersTable();
-            Watchdog_KickDirect();
-            GUI_Attendance_RefreshInfoTab();
             Watchdog_KickDirect();
         } else {
             /* PIN Salah! */
@@ -3223,6 +3282,99 @@ static void dropdown_lpcd_interval_cb(lv_event_t * e)
     }
 }
 
+static void dropdown_antipassback_cb(lv_event_t * e)
+{
+    GUI_Attendance_NotifyActivity();
+    uint32_t sel = lv_dropdown_get_selected(dropdown_antipassback);
+    uint16_t apb_vals[] = {0, 15, 30, 60, 120, 300, 600};
+    uint16_t val = (sel < 7) ? apb_vals[sel] : 60;
+    g_app_settings.antipassback_sec = val;
+    App_Settings_Save(&g_app_settings);
+
+    char pop_msg[96];
+    if (val == 0) {
+        snprintf(pop_msg, sizeof(pop_msg), "Anti-Passback Dinonaktifkan\n(Double-tap diizinkan)");
+    } else {
+        snprintf(pop_msg, sizeof(pop_msg), "Anti-Passback: %u Detik\n(Pencegahan Double-Tap Aktif)", (unsigned int)val);
+    }
+    GUI_Attendance_ShowPopup("ANTI-PASSBACK", pop_msg, true);
+    if (lbl_admin_feedback) {
+        if (val == 0) {
+            lv_label_set_text(lbl_admin_feedback, "Status: Anti-Passback Dinonaktifkan");
+        } else {
+            lv_label_set_text_fmt(lbl_admin_feedback, "Status: Anti-Passback diatur ke %u detik", (unsigned int)val);
+        }
+        lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
+    }
+}
+
+static const char *s_attend_mode_names[ATTEND_MODE_MAX] = {
+    "MASUK",
+    "ISTIRAHAT MULAI",
+    "ISTIRAHAT SELESAI",
+    "PULANG",
+    "IZIN KELUAR",
+    "IZIN MASUK"
+};
+
+const char* GUI_Attendance_GetAttendModeString(attend_mode_t mode)
+{
+    if (mode < ATTEND_MODE_MAX) {
+        return s_attend_mode_names[mode];
+    }
+    return "MASUK";
+}
+
+static void update_attend_mode_buttons_ui(void)
+{
+    for (int i = 0; i < ATTEND_MODE_MAX; i++) {
+        if (!btn_attend_modes[i]) continue;
+        if (i == (int)g_current_attend_mode) {
+            lv_obj_set_style_bg_color(btn_attend_modes[i], lv_color_hex(0x0E7490), 0);
+            lv_obj_set_style_border_color(btn_attend_modes[i], lv_color_hex(COLOR_CYAN_ACCENT), 0);
+            if (lbl_attend_modes[i]) {
+                lv_obj_set_style_text_color(lbl_attend_modes[i], lv_color_hex(0xFFFFFF), 0);
+            }
+        } else {
+            lv_obj_set_style_bg_color(btn_attend_modes[i], lv_color_hex(0x0B1524), 0);
+            lv_obj_set_style_border_color(btn_attend_modes[i], lv_color_hex(COLOR_DARK_BORDER), 0);
+            if (lbl_attend_modes[i]) {
+                lv_obj_set_style_text_color(lbl_attend_modes[i], lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
+            }
+        }
+    }
+}
+
+attend_mode_t GUI_Attendance_GetAttendMode(void)
+{
+    return g_current_attend_mode;
+}
+
+void GUI_Attendance_SetAttendMode(attend_mode_t mode)
+{
+    if (mode >= ATTEND_MODE_MAX) mode = ATTEND_MODE_MASUK;
+    g_current_attend_mode = mode;
+    s_mode_select_tick = HAL_GetTick();
+    update_attend_mode_buttons_ui();
+    if (lbl_status) {
+        if (mode == ATTEND_MODE_MASUK) {
+            lv_label_set_text(lbl_status, "Siap Merekam Kehadiran Anda");
+        } else {
+            char st_buf[64];
+            snprintf(st_buf, sizeof(st_buf), "Mode: %s - Silakan Tap", GUI_Attendance_GetAttendModeString(mode));
+            lv_label_set_text(lbl_status, st_buf);
+        }
+        lv_obj_set_style_text_color(lbl_status, lv_color_hex(COLOR_CYAN_TEXT), 0);
+    }
+}
+
+static void btn_attend_mode_cb(lv_event_t * e)
+{
+    GUI_Attendance_NotifyActivity();
+    attend_mode_t mode = (attend_mode_t)(uintptr_t)lv_event_get_user_data(e);
+    GUI_Attendance_SetAttendMode(mode);
+}
+
 static void btn_refresh_users_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
@@ -3235,6 +3387,23 @@ static void btn_refresh_info_cb(lv_event_t * e)
     LV_UNUSED(e);
     GUI_Attendance_NotifyActivity();
     GUI_Attendance_RefreshInfoTab();
+}
+
+static void tabview_admin_change_cb(lv_event_t * e)
+{
+    lv_obj_t * tv = lv_event_get_target(e);
+    uint32_t active_tab = lv_tabview_get_tab_active(tv);
+    Watchdog_KickDirect();
+    GUI_Attendance_NotifyActivity();
+    if (active_tab == 2) { /* Tab DATA */
+        if (cont_logs_section && !lv_obj_has_flag(cont_logs_section, LV_OBJ_FLAG_HIDDEN)) {
+            load_recent_logs();
+        } else {
+            GUI_Attendance_RefreshUsersTable();
+        }
+    } else if (active_tab == 4) { /* Tab INFO DEV */
+        GUI_Attendance_RefreshInfoTab();
+    }
 }
 
 static void btn_data_switch_cb(lv_event_t * e)

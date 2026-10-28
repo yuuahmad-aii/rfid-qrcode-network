@@ -62,21 +62,19 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
   (void)xTask;
   (void)pcTaskName;
   taskDISABLE_INTERRUPTS();
-  while (1) {
-    HAL_GPIO_TogglePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin);
-    for (volatile uint32_t i = 0; i < 400000; i++) {}
-    HAL_IWDG_Refresh(&hiwdg);
-  }
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+  for (volatile uint32_t i = 0; i < 600000; i++) {}
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+  NVIC_SystemReset();
 }
 
 void vApplicationMallocFailedHook(void)
 {
   taskDISABLE_INTERRUPTS();
-  while (1) {
-    HAL_GPIO_TogglePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin);
-    for (volatile uint32_t i = 0; i < 200000; i++) {}
-    HAL_IWDG_Refresh(&hiwdg);
-  }
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+  for (volatile uint32_t i = 0; i < 400000; i++) {}
+  HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+  NVIC_SystemReset();
 }
 /* USER CODE END 4 */
 

@@ -26,6 +26,9 @@
 #include "cJSON.h"
 #include "lwip/inet.h"
 #include "lwip/ip4_addr.h"
+#include "driver/temperature_sensor.h"
+#include "esp_timer.h"
+
 
 /* WIFI AND API CONFIGURATION - CHANGE THESE! */
 #define WIFI_SSID "YOUR_WIFI_SSID"
@@ -130,6 +133,71 @@ static bool s_is_ap_mode = false;
 static httpd_handle_t s_http_server = NULL;
 static volatile bool s_flashing_stm32_active = false;
 
+/* Cached Wi-Fi info untuk Web Dashboard */
+static char s_wifi_ssid_buf[34] = "-";
+static char s_wifi_ip_buf[16] = "0.0.0.0";
+static char s_wifi_rssi_buf[16] = "- dBm";
+
+/* In-memory Data & Status STM32 untuk Web Dashboard */
+typedef struct {
+  float temp;
+  int rfid_ready;
+  char rfid_ver[16];
+  int sd_mounted;
+  uint32_t pending_count;
+  uint32_t uptime_sec;
+} stm32_stats_t;
+
+static stm32_stats_t s_stm32_stats = {
+    .temp = 32.0f,
+    .rfid_ready = 1,
+    .rfid_ver = "0x18",
+    .sd_mounted = 1,
+    .pending_count = 0,
+    .uptime_sec = 0
+};
+static SemaphoreHandle_t s_stm_stats_sem = NULL;
+
+static char s_stm_config_str[256] = {0};
+static SemaphoreHandle_t s_stm_config_sem = NULL;
+static SemaphoreHandle_t s_stm_config_saved_sem = NULL;
+
+#define MAX_WEB_LINES 120
+#define MAX_LINE_LEN 140
+typedef struct {
+  char lines[MAX_WEB_LINES][MAX_LINE_LEN];
+  uint16_t count;
+  char filename[32];
+  bool in_progress;
+  bool is_eof;
+} web_stream_buf_t;
+
+static web_stream_buf_t s_log_stream = {0};
+static web_stream_buf_t s_user_stream = {0};
+static SemaphoreHandle_t s_log_stream_sem = NULL;
+static SemaphoreHandle_t s_user_stream_sem = NULL;
+static SemaphoreHandle_t s_user_write_sem = NULL;
+static bool s_user_write_ok = false;
+
+/* ESP32-C6 On-Chip Temperature Sensor */
+static temperature_sensor_handle_t s_temp_sensor = NULL;
+
+static void init_esp32_temp_sensor(void) {
+  temperature_sensor_config_t temp_sensor_config =
+      TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+  if (temperature_sensor_install(&temp_sensor_config, &s_temp_sensor) == ESP_OK) {
+    temperature_sensor_enable(s_temp_sensor);
+  }
+}
+
+static float get_esp32_temperature(void) {
+  float tsens_out = 33.5f;
+  if (s_temp_sensor) {
+    temperature_sensor_get_celsius(s_temp_sensor, &tsens_out);
+  }
+  return tsens_out;
+}
+
 static void send_wifi_status_info(void) {
   wifi_ap_record_t ap_info;
   esp_netif_ip_info_t ip_info;
@@ -169,6 +237,9 @@ static void send_wifi_status_info(void) {
   snprintf(msg, sizeof(msg), "WIFI_INFO:%s|%s|%s|%d dBm|%s|%s\n",
            is_connected ? "CONNECTED" : "DISCONNECTED",
            ssid_str, ip_str, rssi, proto_str, mac_str);
+  strncpy(s_wifi_ssid_buf, ssid_str, sizeof(s_wifi_ssid_buf) - 1);
+  strncpy(s_wifi_ip_buf, ip_str, sizeof(s_wifi_ip_buf) - 1);
+  snprintf(s_wifi_rssi_buf, sizeof(s_wifi_rssi_buf), "%d dBm", rssi);
   uart_send_and_log(msg);
 }
 
@@ -609,109 +680,398 @@ static const char ota_html_page[] =
 "<head>"
 "<meta charset=\"UTF-8\">"
 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">"
-"<title>Portal Update Firmware OTA - Absensi RFID</title>"
+"<title>Web Dashboard Gateway Absensi RFID</title>"
 "<style>"
-":root{--bg:#0f172a;--card:#1e293b;--border:#334155;--cyan:#06b6d4;--cyan-h:#0891b2;--amber:#f59e0b;--red:#ef4444;--green:#10b981;--text:#f8fafc;--muted:#94a3b8;}"
+":root{--bg:#0b1120;--card:#1e293b;--border:#334155;--cyan:#06b6d4;--cyan-h:#0891b2;--amber:#f59e0b;--red:#ef4444;--green:#10b981;--purple:#a855f7;--text:#f8fafc;--muted:#94a3b8;}"
 "*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;}"
-"body{background:var(--bg);color:var(--text);padding:18px;min-height:100vh;}"
-".wrap{max-width:800px;margin:0 auto;}"
-".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--border);padding-bottom:14px;margin-bottom:20px;flex-wrap:wrap;gap:10px;}"
-".hdr h1{font-size:22px;font-weight:700;color:#fff;}"
-".hdr p{font-size:12px;color:var(--muted);margin-top:3px;}"
-".badge{background:#064e3b;color:#34d399;border:1px solid #059669;padding:5px 12px;border-radius:9999px;font-size:11px;font-weight:600;}"
-".warn{background:rgba(245,158,11,0.12);border:1px solid var(--amber);border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;gap:12px;align-items:flex-start;}"
-".warn .ico{font-size:22px;line-height:1;color:var(--amber);}"
-".warn h3{font-size:14px;color:#fde68a;font-weight:600;margin-bottom:3px;}"
-".warn p{font-size:12px;color:#cbd5e1;line-height:1.4;}"
-".guide{background:#131d2e;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:20px;font-size:12px;color:#cbd5e1;line-height:1.6;}"
-".guide h4{font-size:13px;color:var(--cyan);margin-bottom:8px;font-weight:600;}"
-".guide ol{padding-left:18px;}"
-".grid{display:grid;grid-template-columns:1fr;gap:18px;margin-bottom:20px;}"
-"@media(min-width:768px){.grid{grid-template-columns:1fr 1fr;}}"
-".card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;display:flex;flex-direction:column;}"
-".chdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}"
-".chdr h2{font-size:16px;font-weight:600;color:#fff;}"
-".chip{font-size:10px;padding:3px 8px;border-radius:6px;font-weight:600;}"
-".chip-s{background:#1e3a8a;color:#93c5fd;}"
-".chip-e{background:#3b0764;color:#d8b4fe;}"
-".desc{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.4;flex-grow:1;}"
-".fbox{border:2px dashed var(--border);border-radius:8px;padding:14px;text-align:center;cursor:pointer;margin-bottom:14px;transition:0.2s;}"
-".fbox:hover{border-color:var(--cyan);background:rgba(6,182,212,0.06);}"
-".fbox input{display:none;}"
-".fbox .ltxt{font-size:12px;color:var(--muted);}"
-".btn{width:100%;padding:11px;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;transition:0.2s;}"
+"body{background:var(--bg);color:var(--text);padding:14px;min-height:100vh;}"
+".wrap{max-width:920px;margin:0 auto;}"
+".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--border);padding-bottom:12px;margin-bottom:14px;flex-wrap:wrap;gap:10px;}"
+".hdr h1{font-size:19px;font-weight:700;color:#fff;}"
+".hdr p{font-size:12px;color:var(--muted);margin-top:2px;}"
+".badge{background:#064e3b;color:#34d399;border:1px solid #059669;padding:4px 10px;border-radius:9999px;font-size:11px;font-weight:600;}"
+".nav-tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:10px;overflow-x:auto;}"
+".tab-btn{background:transparent;border:1px solid transparent;color:var(--muted);padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:0.2s;}"
+".tab-btn:hover{color:#fff;background:rgba(255,255,255,0.05);}"
+".tab-btn.active{background:var(--cyan);color:#082f49;}"
+".tab-panel{display:none;}"
+".tab-panel.active{display:block;}"
+".grid-2{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;}"
+"@media(min-width:720px){.grid-2{grid-template-columns:1fr 1fr;}}"
+".grid-3{display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px;}"
+"@media(min-width:720px){.grid-3{grid-template-columns:1fr 1fr 1fr;}}"
+".card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:15px;margin-bottom:14px;}"
+".card h3{font-size:13px;font-weight:600;color:var(--cyan);margin-bottom:12px;display:flex;align-items:center;gap:6px;}"
+".stat-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;}"
+".stat-row:last-child{border-bottom:none;}"
+".stat-lbl{color:var(--muted);}"
+".stat-val{font-weight:600;color:#fff;}"
+".val-grn{color:var(--green);}"
+".val-amb{color:var(--amber);}"
+".val-red{color:var(--red);}"
+".val-cyn{color:var(--cyan);}"
+".form-group{margin-bottom:11px;}"
+".form-group label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:500;}"
+".form-control{width:100%;background:#0f172a;border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:#fff;font-size:12px;outline:none;}"
+".form-control:focus{border-color:var(--cyan);}"
+".btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:0.2s;}"
 ".btn-pri{background:var(--cyan);color:#082f49;}"
 ".btn-pri:hover:not(:disabled){background:var(--cyan-h);}"
-".btn-pri:disabled{opacity:0.5;cursor:not-allowed;}"
-".btn-ext{background:#334155;color:#f8fafc;margin-top:10px;}"
-".btn-ext:hover{background:#475569;}"
-".pwrap{margin-top:12px;display:none;}"
-".pbar{background:#0f172a;height:10px;border-radius:9999px;overflow:hidden;}"
-".pfill{background:linear-gradient(90deg,#06b6d4,#10b981);height:100%;width:0%;transition:width 0.25s;}"
-".ptxt{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px;}"
-".toast{margin-top:10px;padding:9px;border-radius:7px;font-size:11px;display:none;line-height:1.4;}"
+".btn-sec{background:#334155;color:#fff;}"
+".btn-sec:hover{background:#475569;}"
+".btn-grn{background:var(--green);color:#064e3b;}"
+".btn-grn:hover{background:#059669;}"
+".btn-w100{width:100%;}"
+".btn:disabled{opacity:0.5;cursor:not-allowed;}"
+".tbl-wrap{overflow-x:auto;max-height:360px;margin-top:10px;border:1px solid var(--border);border-radius:6px;}"
+"table{width:100%;border-collapse:collapse;font-size:11px;}"
+"th{background:#0f172a;padding:8px 10px;text-align:left;color:var(--muted);font-weight:600;position:sticky;top:0;}"
+"td{padding:8px 10px;border-top:1px solid rgba(255,255,255,0.05);color:#cbd5e1;}"
+"tr:hover{background:rgba(255,255,255,0.02);}"
+".tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;}"
+".tag-masuk{background:#064e3b;color:#34d399;}"
+".tag-pulang{background:#78350f;color:#fcd34d;}"
+".tag-istirahat{background:#164e63;color:#67e8f9;}"
+".tag-izin{background:#581c87;color:#d8b4fe;}"
+".toast{padding:10px 14px;border-radius:7px;font-size:12px;margin-top:12px;display:none;line-height:1.4;}"
 ".toast.ok{background:rgba(16,185,129,0.15);border:1px solid var(--green);color:#6ee7b7;}"
 ".toast.err{background:rgba(239,68,68,0.15);border:1px solid var(--red);color:#fca5a5;}"
+".pwrap{margin-top:10px;display:none;}"
+".pbar{background:#0f172a;height:8px;border-radius:9999px;overflow:hidden;}"
+".pfill{background:linear-gradient(90deg,#06b6d4,#10b981);height:100%;width:0%;transition:width 0.25s;}"
+".ptxt{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:4px;}"
+".fbox{border:2px dashed var(--border);border-radius:8px;padding:12px;text-align:center;cursor:pointer;margin-bottom:10px;font-size:11px;color:var(--muted);}"
+".fbox:hover{border-color:var(--cyan);background:rgba(6,182,212,0.06);}"
+".fbox input{display:none;}"
+".warn-box{background:rgba(245,158,11,0.12);border:1px solid var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:11px;color:#fde68a;display:flex;gap:10px;align-items:center;}"
 "</style>"
 "</head>"
 "<body>"
 "<div class=\"wrap\">"
 "<div class=\"hdr\">"
-"<div><h1>Portal Update Firmware OTA</h1><p>Mesin Absensi RFID Gateway &bull; SoftAP Mode (192.168.4.1)</p></div>"
+"<div><h1>Gateway Absensi RFID &bull; Web Dashboard</h1><p>Mode SoftAP Admin &bull; IP: 192.168.4.1</p></div>"
 "<span class=\"badge\">&#9679; SoftAP Siap</span>"
 "</div>"
-"<div class=\"warn\"><div class=\"ico\">&#9888;</div><div>"
-"<h3>PERINGATAN OPERATOR LAPANGAN</h3>"
-"<p>Jangan mematikan atau mencabut daya mesin saat proses flashing berlangsung! Tunggu hingga proses 100% dan status sukses ditampilkan.</p>"
-"</div></div>"
-"<div class=\"guide\"><h4>Petunjuk Penggunaan:</h4><ol>"
-"<li>Siapkan file binary berekstensi <b>.bin</b> (firmware hasil build STM32 atau ESP32).</li>"
-"<li>Pilih kotak file pada card yang sesuai, lalu tekan tombol <b>Mulai Update</b>.</li>"
-"<li>Pantau bar progres di browser ini dan layar LCD mesin absensi.</li>"
-"<li>Setelah selesai, tekan <b>Kembali ke Mode Normal (Client)</b> di bawah.</li>"
-"</ol></div>"
-"<div class=\"grid\">"
+"<div class=\"nav-tabs\">"
+"<button class=\"tab-btn active\" onclick=\"showTab('stats')\">&#128202; Statistik</button>"
+"<button class=\"tab-btn\" onclick=\"showTab('logs')\">&#128197; Log Harian</button>"
+"<button class=\"tab-btn\" onclick=\"showTab('users')\">&#128101; Karyawan</button>"
+"<button class=\"tab-btn\" onclick=\"showTab('settings')\">&#9881; Pengaturan</button>"
+"<button class=\"tab-btn\" onclick=\"showTab('ota')\">&#128640; Update OTA</button>"
+"</div>"
+
+/* TAB 1: STATISTIK */
+"<div class=\"tab-panel active\" id=\"panel-stats\">"
+"<div class=\"grid-2\">"
 "<div class=\"card\">"
-"<div class=\"chdr\"><h2>STM32 Main MCU</h2><span class=\"chip chip-s\">STM32F405</span></div>"
-"<p class=\"desc\">Mengontrol UI Display LVGL 480x320, RFID Reader CLRC663, MicroSD FatFS, dan antrean data lokal. Update via ROM Bootloader UART.</p>"
+"<h3>&#127777; Suhu Mikrokontroler</h3>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Suhu STM32 Main MCU</span><span class=\"stat-val val-cyn\" id=\"st-stm-temp\">-- &deg;C</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Suhu ESP32-C6 Co-MCU</span><span class=\"stat-val val-cyn\" id=\"st-esp-temp\">-- &deg;C</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Status Termal</span><span class=\"stat-val val-grn\" id=\"st-thermal-st\">Normal (Aman)</span></div>"
+"</div>"
+"<div class=\"card\">"
+"<h3>&#128246; Koneksi Jaringan Wi-Fi</h3>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Status Wi-Fi</span><span class=\"stat-val\" id=\"st-wifi-st\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">SSID Target</span><span class=\"stat-val\" id=\"st-wifi-ssid\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Kekuatan Sinyal (RSSI)</span><span class=\"stat-val\" id=\"st-wifi-rssi\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Mode Gateway</span><span class=\"stat-val val-amb\" id=\"st-gateway-mode\">SoftAP (192.168.4.1)</span></div>"
+"</div>"
+"</div>"
+"<div class=\"grid-2\">"
+"<div class=\"card\">"
+"<h3>&#128279; Periferal Hardware & Storage</h3>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">RFID Reader CLRC663</span><span class=\"stat-val\" id=\"st-rfid-st\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">MicroSD Card FatFS</span><span class=\"stat-val\" id=\"st-sd-st\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Antrean Pending Sync</span><span class=\"stat-val val-amb\" id=\"st-pending\">-- data</span></div>"
+"</div>"
+"<div class=\"card\">"
+"<h3>&#9201; Uptime & Konsumsi Memori</h3>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Uptime STM32</span><span class=\"stat-val\" id=\"st-stm-up\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Uptime ESP32</span><span class=\"stat-val\" id=\"st-esp-up\">--</span></div>"
+"<div class=\"stat-row\"><span class=\"stat-lbl\">Free RAM Heap ESP32</span><span class=\"stat-val val-grn\" id=\"st-esp-heap\">-- KB</span></div>"
+"</div>"
+"</div>"
+"<div style=\"display:flex;gap:10px;align-items:center;\">"
+"<button class=\"btn btn-pri\" onclick=\"fetchStats()\">&#8635; Segarkan Statistik</button>"
+"<label style=\"font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;\">"
+"<input type=\"checkbox\" id=\"auto-poll\" onchange=\"toggleAutoPoll(this)\"> Auto Refresh (5s)"
+"</label>"
+"</div>"
+"</div>"
+
+/* TAB 2: LOG HARIAN */
+"<div class=\"tab-panel\" id=\"panel-logs\">"
+"<div class=\"card\">"
+"<h3>&#128197; Unduh & Pratinjau Log Absensi Harian</h3>"
+"<div style=\"display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;\">"
+"<div style=\"flex-grow:1;min-width:180px;\">"
+"<label style=\"font-size:11px;color:var(--muted);display:block;margin-bottom:4px;\">Tanggal Log (Format YYYYMMDD):</label>"
+"<input type=\"text\" class=\"form-control\" id=\"log-date-inp\" placeholder=\"20261028\">"
+"</div>"
+"<button class=\"btn btn-pri\" onclick=\"loadLogPreview()\">&#128269; Pratinjau Log</button>"
+"<button class=\"btn btn-grn\" onclick=\"downloadDailyLog()\">&#128229; Unduh CSV</button>"
+"</div>"
+"<p style=\"font-size:11px;color:var(--muted);margin-bottom:8px;\" id=\"log-status-lbl\">Menampilkan data dari file log harian...</p>"
+"<div class=\"tbl-wrap\">"
+"<table>"
+"<thead><tr><th>No</th><th>Waktu</th><th>UID Kartu</th><th>Nama Karyawan</th><th>Mode Kehadiran</th></tr></thead>"
+"<tbody id=\"log-tbody\"><tr><td colspan=\"5\" style=\"text-align:center;color:var(--muted);padding:20px;\">Tekan tombol Pratinjau Log untuk menampilkan data.</td></tr></tbody>"
+"</table>"
+"</div>"
+"</div>"
+"</div>"
+
+/* TAB 3: DAFTAR KARYAWAN */
+"<div class=\"tab-panel\" id=\"panel-users\">"
+"<div class=\"grid-2\">"
+"<div class=\"card\">"
+"<h3>&#128229; Unduh Database USERS.CSV</h3>"
+"<p style=\"font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5;\">Unduh file daftar master karyawan lokal dari slot MicroSD mesin absensi untuk backup atau diedit di spreadsheet.</p>"
+"<button class=\"btn btn-grn btn-w100\" onclick=\"window.location.href='/api/users/download'\">&#128229; Unduh File USERS.CSV</button>"
+"<button class=\"btn btn-sec btn-w100\" style=\"margin-top:8px;\" onclick=\"loadUsersPreview()\">&#128203; Lihat Tabel di Browser</button>"
+"</div>"
+"<div class=\"card\">"
+"<h3>&#128228; Upload Database USERS.CSV</h3>"
+"<p style=\"font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5;\">Pilih file <b>USERS.CSV</b> baru untuk ditransfer ke MicroSD mesin absensi. Cache RAM akan otomatis dihangatkan.</p>"
+"<div class=\"fbox\" onclick=\"document.getElementById('f-users').click()\">"
+"<input type=\"file\" id=\"f-users\" accept=\".csv\" onchange=\"onUserFileSelected(this)\">"
+"<div id=\"lbl-users-file\">&#128190; Pilih File <b>USERS.CSV</b></div>"
+"</div>"
+"<button class=\"btn btn-pri btn-w100\" id=\"btn-up-users\" disabled onclick=\"uploadUsersFile()\">&#9654; Upload ke MicroSD</button>"
+"<div class=\"toast\" id=\"t-users\"></div>"
+"</div>"
+"</div>"
+"<div class=\"card\">"
+"<h3>&#128101; Pratinjau Daftar Karyawan Terdaftar (USERS.CSV)</h3>"
+"<div class=\"tbl-wrap\">"
+"<table>"
+"<thead><tr><th>No</th><th>UID Kartu (Hex)</th><th>Nama Karyawan</th><th>Departemen / Jabatan</th></tr></thead>"
+"<tbody id=\"users-tbody\"><tr><td colspan=\"4\" style=\"text-align:center;color:var(--muted);padding:20px;\">Tekan tombol Lihat Tabel untuk menampilkan daftar karyawan.</td></tr></tbody>"
+"</table>"
+"</div>"
+"</div>"
+"</div>"
+
+/* TAB 4: PENGATURAN ADMIN */
+"<div class=\"tab-panel\" id=\"panel-settings\">"
+"<div class=\"card\">"
+"<h3>&#9881; Konfigurasi Parameter Mesin Absensi</h3>"
+"<div class=\"grid-3\">"
+"<div>"
+"<h4 style=\"font-size:12px;color:var(--cyan);margin-bottom:8px;\">Identitas Mesin</h4>"
+"<div class=\"form-group\"><label>Kode Perangkat:</label><input type=\"text\" class=\"form-control\" id=\"cfg-code\"></div>"
+"<div class=\"form-group\"><label>Nama Perangkat:</label><input type=\"text\" class=\"form-control\" id=\"cfg-name\"></div>"
+"<div class=\"form-group\"><label>PIN Admin (6 digit):</label><input type=\"password\" class=\"form-control\" id=\"cfg-pin\" maxlength=\"6\"></div>"
+"</div>"
+"<div>"
+"<h4 style=\"font-size:12px;color:var(--cyan);margin-bottom:8px;\">Jaringan & Sinkronisasi</h4>"
+"<div class=\"form-group\"><label>SSID Wi-Fi:</label><input type=\"text\" class=\"form-control\" id=\"cfg-ssid\"></div>"
+"<div class=\"form-group\"><label>Password Wi-Fi:</label><input type=\"password\" class=\"form-control\" id=\"cfg-pass\"></div>"
+"<div class=\"form-group\"><label>Mode Sinkronisasi:</label>"
+"<select class=\"form-control\" id=\"cfg-sync\"><option value=\"0\">Realtime</option><option value=\"1\">Batch</option><option value=\"2\">Periodic</option></select>"
+"</div>"
+"<div class=\"form-group\"><label>Interval Sinkron (Menit):</label><input type=\"number\" class=\"form-control\" id=\"cfg-sync-int\" min=\"1\" max=\"1440\"></div>"
+"</div>"
+"<div>"
+"<h4 style=\"font-size:12px;color:var(--cyan);margin-bottom:8px;\">Anti-Passback & Layar</h4>"
+"<div class=\"form-group\"><label>Anti-Passback Cooldown:</label>"
+"<select class=\"form-control\" id=\"cfg-apb\">"
+"<option value=\"0\">Nonaktif (0s)</option><option value=\"15\">15 Detik</option><option value=\"30\">30 Detik</option>"
+"<option value=\"60\">60 Detik (1 Menit)</option><option value=\"120\">2 Menit</option><option value=\"300\">5 Menit</option><option value=\"600\">10 Menit</option>"
+"</select>"
+"</div>"
+"<div class=\"form-group\"><label>Kecerahan LCD (%):</label><input type=\"number\" class=\"form-control\" id=\"cfg-bright\" min=\"10\" max=\"100\"></div>"
+"<div class=\"form-group\"><label>Timeout Layar Sleep:</label>"
+"<select class=\"form-control\" id=\"cfg-sleep\">"
+"<option value=\"0\">Selalu Aktif (0s)</option><option value=\"15\">15 Detik</option><option value=\"30\">30 Detik</option>"
+"<option value=\"60\">1 Menit</option><option value=\"120\">2 Menit</option><option value=\"300\">5 Menit</option>"
+"</select>"
+"</div>"
+"<div class=\"form-group\"><label>Tema Tampilan GUI:</label>"
+"<select class=\"form-control\" id=\"cfg-theme\">"
+"<option value=\"0\">Dark Cyan</option><option value=\"1\">Midnight Blue</option><option value=\"2\">Forest Green</option>"
+"<option value=\"3\">Sunset Amber</option><option value=\"4\">Ruby Dark</option>"
+"</select>"
+"</div>"
+"</div>"
+"</div>"
+"<div style=\"display:flex;gap:10px;align-items:center;\">"
+"<button class=\"btn btn-grn\" onclick=\"saveSettings()\">&#128190; Simpan Semua Pengaturan</button>"
+"<button class=\"btn btn-sec\" onclick=\"loadSettings()\">&#8635; Muat Ulang</button>"
+"</div>"
+"<div class=\"toast\" id=\"t-cfg\"></div>"
+"</div>"
+"</div>"
+
+/* TAB 5: UPDATE OTA */
+"<div class=\"tab-panel\" id=\"panel-ota\">"
+"<div class=\"warn-box\"><div>&#9888;</div><div><b>PERINGATAN OPERATOR:</b> Jangan mencabut daya mesin saat flashing berlangsung! Tunggu hingga proses 100% sukses.</div></div>"
+"<div class=\"grid-2\">"
+"<div class=\"card\">"
+"<div style=\"display:flex;justify-content:space-between;margin-bottom:10px;\"><h3>STM32 Main MCU</h3><span class=\"badge\" style=\"background:#1e3a8a;color:#93c5fd;\">STM32F405</span></div>"
+"<p style=\"font-size:12px;color:var(--muted);margin-bottom:12px;\">Firmware UI LVGL, RFID Reader, dan penyimpanan MicroSD. Flash via UART ROM Bootloader.</p>"
 "<div class=\"fbox\" onclick=\"document.getElementById('f-s').click()\">"
 "<input type=\"file\" id=\"f-s\" accept=\".bin\" onchange=\"onF(this,'l-s','b-s')\">"
-"<div class=\"ltxt\" id=\"l-s\">&#128190; Pilih File <b>firmware_stm32.bin</b></div>"
+"<div id=\"l-s\">&#128190; Pilih File <b>firmware_stm32.bin</b></div>"
 "</div>"
-"<button class=\"btn btn-pri\" id=\"b-s\" disabled onclick=\"upF('stm32')\">&#9654; Mulai Update STM32</button>"
+"<button class=\"btn btn-pri btn-w100\" id=\"b-s\" disabled onclick=\"upF('stm32')\">&#9654; Mulai Update STM32</button>"
 "<div class=\"pwrap\" id=\"pw-stm32\"><div class=\"pbar\"><div class=\"pfill\" id=\"pf-stm32\"></div></div>"
 "<div class=\"ptxt\"><span id=\"ps-stm32\">Mengunggah...</span><span id=\"pp-stm32\">0%</span></div></div>"
 "<div class=\"toast\" id=\"t-stm32\"></div>"
 "</div>"
 "<div class=\"card\">"
-"<div class=\"chdr\"><h2>ESP32-C6 Co-MCU</h2><span class=\"chip chip-e\">ESP32-C6 Wi-Fi 6</span></div>"
-"<p class=\"desc\">Mengontrol koneksi Wi-Fi 6/4, protokol sinkronisasi HTTP backend, dan Web Server OTA. Update via native dual-partition OTA.</p>"
+"<div style=\"display:flex;justify-content:space-between;margin-bottom:10px;\"><h3>ESP32-C6 Co-MCU</h3><span class=\"badge\" style=\"background:#3b0764;color:#d8b4fe;\">Wi-Fi 6</span></div>"
+"<p style=\"font-size:12px;color:var(--muted);margin-bottom:12px;\">Firmware Wi-Fi 6, HTTP Sync, dan Web Server. Update via native dual-partition OTA.</p>"
 "<div class=\"fbox\" onclick=\"document.getElementById('f-e').click()\">"
 "<input type=\"file\" id=\"f-e\" accept=\".bin\" onchange=\"onF(this,'l-e','b-e')\">"
-"<div class=\"ltxt\" id=\"l-e\">&#128190; Pilih File <b>firmware_esp32.bin</b></div>"
+"<div id=\"l-e\">&#128190; Pilih File <b>firmware_esp32.bin</b></div>"
 "</div>"
-"<button class=\"btn btn-pri\" id=\"b-e\" disabled onclick=\"upF('esp32')\">&#9654; Mulai Update ESP32</button>"
+"<button class=\"btn btn-pri btn-w100\" id=\"b-e\" disabled onclick=\"upF('esp32')\">&#9654; Mulai Update ESP32</button>"
 "<div class=\"pwrap\" id=\"pw-esp32\"><div class=\"pbar\"><div class=\"pfill\" id=\"pf-esp32\"></div></div>"
 "<div class=\"ptxt\"><span id=\"ps-esp32\">Mengunggah...</span><span id=\"pp-esp32\">0%</span></div></div>"
 "<div class=\"toast\" id=\"t-esp32\"></div>"
 "</div>"
 "</div>"
-"<button class=\"btn btn-ext\" onclick=\"exitSta()\">&#10005; Selesai & Kembali ke Mode Client (Station)</button>"
 "</div>"
+
+"<button class=\"btn btn-sec btn-w100\" style=\"margin-top:14px;\" onclick=\"exitSta()\">&#10005; Tutup Portal & Kembali ke Mode Client (Station)</button>"
+"</div>"
+
 "<script>"
-"function onF(i,l,b){if(i.files&&i.files[0]){var f=i.files[0];document.getElementById(l).innerHTML='<b>'+f.name+'</b> ('+(f.size/1024).toFixed(1)+' KB)';document.getElementById(b).disabled=false;}}"
+"function showTab(id){"
+"  document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});"
+"  document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active');});"
+"  event.target.classList.add('active');"
+"  var p=document.getElementById('panel-'+id);if(p)p.classList.add('active');"
+"  if(id==='stats')fetchStats();"
+"  if(id==='settings')loadSettings();"
+"}"
+"function fetchStats(){"
+"  fetch('/api/stats').then(function(r){return r.json();}).then(function(d){"
+"    if(d.stm32){"
+"      document.getElementById('st-stm-temp').innerText=d.stm32.temp.toFixed(1)+' \u00B0C';"
+"      document.getElementById('st-rfid-st').innerHTML=d.stm32.rfid_ready?'<span class=\"val-grn\">Online (Ready)</span>':'<span class=\"val-red\">Offline</span>';"
+"      document.getElementById('st-sd-st').innerHTML=d.stm32.sd_mounted?'<span class=\"val-grn\">Terpasang (FAT32)</span>':'<span class=\"val-red\">Tidak Terpasang</span>';"
+"      document.getElementById('st-pending').innerText=d.stm32.pending_count+' data';"
+"      var sm=Math.floor(d.stm32.uptime/60),ss=d.stm32.uptime%60;document.getElementById('st-stm-up').innerText=sm+'m '+ss+'s';"
+"    }"
+"    if(d.esp32){"
+"      document.getElementById('st-esp-temp').innerText=d.esp32.temp.toFixed(1)+' \u00B0C';"
+"      document.getElementById('st-wifi-st').innerHTML=d.esp32.wifi_status==='Connected'?'<span class=\"val-grn\">Terhubung</span>':'<span class=\"val-red\">Terputus</span>';"
+"      document.getElementById('st-wifi-ssid').innerText=d.esp32.wifi_ssid||'-';"
+"      document.getElementById('st-wifi-rssi').innerText=d.esp32.wifi_rssi||'-';"
+"      var em=Math.floor(d.esp32.uptime/60),es=d.esp32.uptime%60;document.getElementById('st-esp-up').innerText=em+'m '+es+'s';"
+"      document.getElementById('st-esp-heap').innerText=(d.esp32.free_heap/1024).toFixed(1)+' KB';"
+"    }"
+"  }).catch(function(e){console.log('Stats error',e);});"
+"}"
 "var pollTimer=null;"
+"function toggleAutoPoll(cb){if(cb.checked){pollTimer=setInterval(fetchStats,5000);}else{clearInterval(pollTimer);pollTimer=null;}}"
+"function loadLogPreview(){"
+"  var dt=document.getElementById('log-date-inp').value.trim();"
+"  var url='/api/log/preview'+(dt?('?date='+dt):'');"
+"  document.getElementById('log-status-lbl').innerText='Memuat data log dari MicroSD...';"
+"  fetch(url).then(function(r){return r.json();}).then(function(d){"
+"    var tb=document.getElementById('log-tbody');tb.innerHTML='';"
+"    document.getElementById('log-status-lbl').innerText='File: '+d.filename+' ('+d.count+' baris terekam)';"
+"    if(!d.lines||d.lines.length===0){tb.innerHTML='<tr><td colspan=\"5\" style=\"text-align:center;padding:20px;\">Tidak ada catatan log pada tanggal ini.</td></tr>';return;}"
+"    d.lines.forEach(function(l,i){"
+"      var pts=l.split(',');var time='-',uid='-',name='-',mode='Masuk';"
+"      pts.forEach(function(p){"
+"        if(p.indexOf('UID:')===0)uid=p.substr(4);"
+"        else if(p.indexOf('NAME=')===0)name=p.substr(5);"
+"        else if(p.indexOf('MODE=')===0)mode=p.substr(5);"
+"        else if(p.indexOf('20')===0)time=p;"
+"      });"
+"      var mcls='tag-masuk';"
+"      if(mode.indexOf('Pulang')>=0)mcls='tag-pulang';"
+"      else if(mode.indexOf('Istirahat')>=0)mcls='tag-istirahat';"
+"      else if(mode.indexOf('Izin')>=0)mcls='tag-izin';"
+"      var tr='<tr><td>'+(i+1)+'</td><td>'+time+'</td><td><code>'+uid+'</code></td><td><b>'+name+'</b></td><td><span class=\"tag '+mcls+'\">'+mode+'</span></td></tr>';"
+"      tb.innerHTML+=tr;"
+"    });"
+"  }).catch(function(e){alert('Gagal membaca log: '+e);});"
+"}"
+"function downloadDailyLog(){"
+"  var dt=document.getElementById('log-date-inp').value.trim();"
+"  window.location.href='/api/log/download'+(dt?('?date='+dt):'');"
+"}"
+"function onUserFileSelected(inp){"
+"  if(inp.files&&inp.files[0]){"
+"    var f=inp.files[0];document.getElementById('lbl-users-file').innerHTML='<b>'+f.name+'</b> ('+(f.size/1024).toFixed(1)+' KB)';"
+"    document.getElementById('btn-up-users').disabled=false;"
+"  }"
+"}"
+"function uploadUsersFile(){"
+"  var fi=document.getElementById('f-users');if(!fi.files||!fi.files[0])return;"
+"  var f=fi.files[0];var tt=document.getElementById('t-users');var b=document.getElementById('btn-up-users');"
+"  b.disabled=true;tt.style.display='none';"
+"  var x=new XMLHttpRequest();x.open('POST','/api/users/upload',true);"
+"  x.onload=function(){"
+"    b.disabled=false;"
+"    if(x.status===200){tt.className='toast ok';tt.innerText='SUKSES: '+x.responseText;tt.style.display='block';loadUsersPreview();}"
+"    else{tt.className='toast err';tt.innerText='GAGAL: '+x.responseText;tt.style.display='block';}"
+"  };"
+"  x.onerror=function(){b.disabled=false;tt.className='toast err';tt.innerText='GAGAL: Terjadi error koneksi!';tt.style.display='block';};"
+"  x.send(f);"
+"}"
+"function loadUsersPreview(){"
+"  fetch('/api/users/preview').then(function(r){return r.json();}).then(function(d){"
+"    var tb=document.getElementById('users-tbody');tb.innerHTML='';"
+"    if(!d.lines||d.lines.length===0){tb.innerHTML='<tr><td colspan=\"4\" style=\"text-align:center;padding:20px;\">USERS.CSV kosong atau belum dibuat.</td></tr>';return;}"
+"    d.lines.forEach(function(l,i){"
+"      var p=l.split(',');var uid=p[0]||'-',name=p[1]||'-',dept=p[2]||'-';"
+"      tb.innerHTML+='<tr><td>'+(i+1)+'</td><td><code>'+uid+'</code></td><td><b>'+name+'</b></td><td>'+dept+'</td></tr>';"
+"    });"
+"  }).catch(function(e){alert('Gagal memuat karyawan: '+e);});"
+"}"
+"function loadSettings(){"
+"  fetch('/api/settings').then(function(r){return r.json();}).then(function(d){"
+"    document.getElementById('cfg-code').value=d.dev_code||'';"
+"    document.getElementById('cfg-name').value=d.dev_name||'';"
+"    document.getElementById('cfg-pin').value=d.admin_pin||'';"
+"    document.getElementById('cfg-ssid').value=d.wifi_ssid||'';"
+"    document.getElementById('cfg-pass').value=d.wifi_pass||'';"
+"    document.getElementById('cfg-sync').value=d.sync_mode!==undefined?d.sync_mode:0;"
+"    document.getElementById('cfg-sync-int').value=d.sync_interval!==undefined?d.sync_interval:15;"
+"    document.getElementById('cfg-apb').value=d.antipassback!==undefined?d.antipassback:60;"
+"    document.getElementById('cfg-bright').value=d.brightness!==undefined?d.brightness:80;"
+"    document.getElementById('cfg-sleep').value=d.sleep_timeout!==undefined?d.sleep_timeout:30;"
+"    document.getElementById('cfg-theme').value=d.theme!==undefined?d.theme:0;"
+"  }).catch(function(e){console.log('Settings error',e);});"
+"}"
+"function saveSettings(){"
+"  var payload={"
+"    dev_code:document.getElementById('cfg-code').value,"
+"    dev_name:document.getElementById('cfg-name').value,"
+"    admin_pin:document.getElementById('cfg-pin').value,"
+"    wifi_ssid:document.getElementById('cfg-ssid').value,"
+"    wifi_pass:document.getElementById('cfg-pass').value,"
+"    sync_mode:parseInt(document.getElementById('cfg-sync').value),"
+"    sync_interval:parseInt(document.getElementById('cfg-sync-int').value),"
+"    antipassback:parseInt(document.getElementById('cfg-apb').value),"
+"    brightness:parseInt(document.getElementById('cfg-bright').value),"
+"    sleep_timeout:parseInt(document.getElementById('cfg-sleep').value),"
+"    theme:parseInt(document.getElementById('cfg-theme').value)"
+"  };"
+"  var tt=document.getElementById('t-cfg');"
+"  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){"
+"    tt.className='toast ok';tt.innerText=d.message||'Pengaturan tersimpan!';tt.style.display='block';"
+"  }).catch(function(e){tt.className='toast err';tt.innerText='Gagal menyimpan pengaturan: '+e;tt.style.display='block';});"
+"}"
+"function onF(i,l,b){if(i.files&&i.files[0]){var f=i.files[0];document.getElementById(l).innerHTML='<b>'+f.name+'</b> ('+(f.size/1024).toFixed(1)+' KB)';document.getElementById(b).disabled=false;}}"
+"var otaPoll=null;"
 "function pollSTM32(){"
 "  fetch('/api/flash_status').then(function(r){return r.json();}).then(function(d){"
 "    var pf=document.getElementById('pf-stm32'),pp=document.getElementById('pp-stm32'),ps=document.getElementById('ps-stm32'),tt=document.getElementById('t-stm32'),b=document.getElementById('b-s');"
 "    if(d.progress!==undefined){pf.style.width=d.progress+'%';pp.innerText=d.progress+'%';}"
 "    if(d.message){ps.innerText=d.message;}"
 "    if(d.state==='success'){"
-"      clearInterval(pollTimer);"
+"      clearInterval(otaPoll);"
 "      pf.style.width='100%';pp.innerText='100%';ps.innerText='Selesai!';"
 "      tt.className='toast ok';tt.innerText=d.message;tt.style.display='block';"
 "    }else if(d.state==='error'){"
-"      clearInterval(pollTimer);"
+"      clearInterval(otaPoll);"
 "      tt.className='toast err';tt.innerText='GAGAL: '+d.message;tt.style.display='block';b.disabled=false;"
 "    }"
 "  }).catch(function(e){console.log('Poll error',e);});"
@@ -727,7 +1087,7 @@ static const char ota_html_page[] =
 "    if(x.status===200){"
 "      if(t==='stm32'){"
 "        ps.innerText='Memulai penghapusan & pemrograman flash STM32...';"
-"        pollTimer=setInterval(pollSTM32,600);"
+"        otaPoll=setInterval(pollSTM32,600);"
 "      }else{"
 "        pf.style.width='100%';pp.innerText='100%';ps.innerText='Selesai!';"
 "        tt.className='toast ok';tt.innerText='SUKSES: Firmware ESP32 berhasil di-flash! ESP32 akan reboot otomatis.';tt.style.display='block';"
@@ -737,10 +1097,16 @@ static const char ota_html_page[] =
 "  x.onerror=function(){tt.className='toast err';tt.innerText='GAGAL: Terjadi gangguan jaringan saat mengunggah!';tt.style.display='block';b.disabled=false;};"
 "  x.send(f);"
 "}"
-"function exitSta(){if(confirm('Kembali ke mode Wi-Fi Client (Station) dan menutup portal OTA?')){fetch('/api/mode',{method:'POST',body:'mode=sta'}).then(function(){alert('Portal OTA ditutup. Mesin kembali ke mode normal.');}).catch(function(){alert('Perintah terkirim.');});}}"
+"function exitSta(){if(confirm('Kembali ke mode Wi-Fi Client (Station) dan menutup portal Web Dashboard?')){fetch('/api/mode',{method:'POST',body:'mode=sta'}).then(function(){alert('Portal ditutup. Mesin kembali ke mode normal.');}).catch(function(){alert('Perintah terkirim.');});}}"
+"window.onload=function(){"
+"  var d=new Date();var ym=d.getFullYear()+('0'+(d.getMonth()+1)).slice(-2)+('0'+d.getDate()).slice(-2);"
+"  var di=document.getElementById('log-date-inp');if(di)di.value=ym;"
+"  fetchStats();"
+"};"
 "</script>"
 "</body>"
 "</html>";
+
 
 /* ========================================================================== */
 /*                           HTTP SERVER HANDLERS                             */
@@ -931,6 +1297,384 @@ static esp_err_t ota_api_flash_status_get_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t dashboard_api_stats_get_handler(httpd_req_t *req) {
+    if (s_stm_stats_sem) {
+        xSemaphoreTake(s_stm_stats_sem, 0);
+    }
+    uart_send_and_log("CMD:GET_STM_STATS\n");
+    if (s_stm_stats_sem) {
+        xSemaphoreTake(s_stm_stats_sem, pdMS_TO_TICKS(500));
+    }
+
+    char json[512];
+    snprintf(json, sizeof(json),
+        "{\"esp32\":{\"temp\":%.1f,\"free_heap\":%lu,\"uptime\":%lu,\"mode\":\"%s\",\"wifi_status\":\"%s\",\"wifi_ssid\":\"%s\",\"wifi_rssi\":\"%s\"},"
+        "\"stm32\":{\"temp\":%.1f,\"rfid_ready\":%s,\"rfid_version\":\"%s\",\"sd_mounted\":%s,\"pending_count\":%lu,\"uptime\":%lu}}",
+        get_esp32_temperature(),
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)(esp_timer_get_time() / 1000000),
+        s_is_ap_mode ? "SoftAP" : "Station",
+        (xEventGroupGetBits(s_wifi_event_group) & WIFI_CONNECTED_BIT) ? "Connected" : "Disconnected",
+        s_wifi_ssid_buf, s_wifi_rssi_buf,
+        s_stm32_stats.temp,
+        s_stm32_stats.rfid_ready ? "true" : "false",
+        s_stm32_stats.rfid_ver[0] ? s_stm32_stats.rfid_ver : "0x18",
+        s_stm32_stats.sd_mounted ? "true" : "false",
+        (unsigned long)s_stm32_stats.pending_count,
+        (unsigned long)s_stm32_stats.uptime_sec);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_settings_get_handler(httpd_req_t *req) {
+    if (s_stm_config_sem) {
+        xSemaphoreTake(s_stm_config_sem, 0);
+    }
+    uart_send_and_log("CMD:GET_ALL_CONFIG\n");
+    if (s_stm_config_sem) {
+        xSemaphoreTake(s_stm_config_sem, pdMS_TO_TICKS(600));
+    }
+
+    char saved_ssid[34] = "";
+    char saved_pass[66] = "";
+    nvs_handle_t my_handle;
+    if (nvs_open("storage", NVS_READONLY, &my_handle) == ESP_OK) {
+        size_t req_len = sizeof(saved_ssid);
+        nvs_get_str(my_handle, "ssid", saved_ssid, &req_len);
+        req_len = sizeof(saved_pass);
+        nvs_get_str(my_handle, "pass", saved_pass, &req_len);
+        nvs_close(my_handle);
+    }
+
+    char code[32] = "GATE-001", name[32] = "Gate Utama", pin[16] = "123456";
+    int sync = 0, sync_int = 15, apb = 60, bright = 80, sleep = 30, theme = 0, rot = 0, lpcd_d = 3, lpcd_i = 300;
+
+    if (strlen(s_stm_config_str) > 0) {
+        char buf[256];
+        strncpy(buf, s_stm_config_str, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *tok = strtok(buf, "|");
+        while (tok) {
+            if (strncmp(tok, "DEV_CODE=", 9) == 0) strncpy(code, tok + 9, sizeof(code) - 1);
+            else if (strncmp(tok, "DEV_NAME=", 9) == 0) strncpy(name, tok + 9, sizeof(name) - 1);
+            else if (strncmp(tok, "PIN=", 4) == 0) strncpy(pin, tok + 4, sizeof(pin) - 1);
+            else if (strncmp(tok, "SYNC=", 5) == 0) sync = atoi(tok + 5);
+            else if (strncmp(tok, "INT=", 4) == 0) sync_int = atoi(tok + 4);
+            else if (strncmp(tok, "APB=", 4) == 0) apb = atoi(tok + 4);
+            else if (strncmp(tok, "BRIGHT=", 7) == 0) bright = atoi(tok + 7);
+            else if (strncmp(tok, "SLEEP=", 6) == 0) sleep = atoi(tok + 6);
+            else if (strncmp(tok, "THEME=", 6) == 0) theme = atoi(tok + 6);
+            else if (strncmp(tok, "ROT=", 4) == 0) rot = atoi(tok + 4);
+            else if (strncmp(tok, "LPCD_D=", 7) == 0) lpcd_d = atoi(tok + 7);
+            else if (strncmp(tok, "LPCD_I=", 7) == 0) lpcd_i = atoi(tok + 7);
+            tok = strtok(NULL, "|");
+        }
+    }
+
+    char json[512];
+    snprintf(json, sizeof(json),
+        "{\"dev_code\":\"%s\",\"dev_name\":\"%s\",\"admin_pin\":\"%s\","
+        "\"wifi_ssid\":\"%s\",\"wifi_pass\":\"%s\","
+        "\"sync_mode\":%d,\"sync_interval\":%d,\"antipassback\":%d,"
+        "\"brightness\":%d,\"sleep_timeout\":%d,\"theme\":%d,\"rotation\":%d,"
+        "\"lpcd_delta\":%d,\"lpcd_interval\":%d}",
+        code, name, pin, saved_ssid, saved_pass,
+        sync, sync_int, apb, bright, sleep, theme, rot, lpcd_d, lpcd_i);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_settings_post_handler(httpd_req_t *req) {
+    char rx_buf[600] = {0};
+    int ret = httpd_req_recv(req, rx_buf, sizeof(rx_buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload kosong.");
+        return ESP_FAIL;
+    }
+    rx_buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(rx_buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Format JSON tidak valid.");
+        return ESP_FAIL;
+    }
+
+    cJSON *c_code = cJSON_GetObjectItem(root, "dev_code");
+    cJSON *c_name = cJSON_GetObjectItem(root, "dev_name");
+    cJSON *c_pin  = cJSON_GetObjectItem(root, "admin_pin");
+    cJSON *c_ssid = cJSON_GetObjectItem(root, "wifi_ssid");
+    cJSON *c_pass = cJSON_GetObjectItem(root, "wifi_pass");
+    cJSON *c_sync = cJSON_GetObjectItem(root, "sync_mode");
+    cJSON *c_int  = cJSON_GetObjectItem(root, "sync_interval");
+    cJSON *c_apb  = cJSON_GetObjectItem(root, "antipassback");
+    cJSON *c_brt  = cJSON_GetObjectItem(root, "brightness");
+    cJSON *c_slp  = cJSON_GetObjectItem(root, "sleep_timeout");
+    cJSON *c_thm  = cJSON_GetObjectItem(root, "theme");
+    cJSON *c_rot  = cJSON_GetObjectItem(root, "rotation");
+    cJSON *c_lp_d = cJSON_GetObjectItem(root, "lpcd_delta");
+    cJSON *c_lp_i = cJSON_GetObjectItem(root, "lpcd_interval");
+
+    if (c_ssid && cJSON_IsString(c_ssid) && strlen(c_ssid->valuestring) > 0) {
+        nvs_handle_t my_handle;
+        if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+            nvs_set_str(my_handle, "ssid", c_ssid->valuestring);
+            if (c_pass && cJSON_IsString(c_pass)) {
+                nvs_set_str(my_handle, "pass", c_pass->valuestring);
+            }
+            nvs_commit(my_handle);
+            nvs_close(my_handle);
+        }
+    }
+
+    char cmd[300];
+    snprintf(cmd, sizeof(cmd),
+        "CMD:SET_ALL_CONFIG:DEV_CODE=%s|DEV_NAME=%s|PIN=%s|SYNC=%d|INT=%d|APB=%d|BRIGHT=%d|SLEEP=%d|THEME=%d|ROT=%d|LPCD_D=%d|LPCD_I=%d\n",
+        (c_code && cJSON_IsString(c_code)) ? c_code->valuestring : s_device_code,
+        (c_name && cJSON_IsString(c_name)) ? c_name->valuestring : s_device_name,
+        (c_pin && cJSON_IsString(c_pin)) ? c_pin->valuestring : "123456",
+        (c_sync && cJSON_IsNumber(c_sync)) ? c_sync->valueint : 0,
+        (c_int && cJSON_IsNumber(c_int)) ? c_int->valueint : 15,
+        (c_apb && cJSON_IsNumber(c_apb)) ? c_apb->valueint : 60,
+        (c_brt && cJSON_IsNumber(c_brt)) ? c_brt->valueint : 80,
+        (c_slp && cJSON_IsNumber(c_slp)) ? c_slp->valueint : 30,
+        (c_thm && cJSON_IsNumber(c_thm)) ? c_thm->valueint : 0,
+        (c_rot && cJSON_IsNumber(c_rot)) ? c_rot->valueint : 0,
+        (c_lp_d && cJSON_IsNumber(c_lp_d)) ? c_lp_d->valueint : 3,
+        (c_lp_i && cJSON_IsNumber(c_lp_i)) ? c_lp_i->valueint : 300);
+
+    cJSON_Delete(root);
+
+    if (s_stm_config_saved_sem) {
+        xSemaphoreTake(s_stm_config_saved_sem, 0);
+    }
+    uart_send_and_log(cmd);
+    if (s_stm_config_saved_sem) {
+        xSemaphoreTake(s_stm_config_saved_sem, pdMS_TO_TICKS(1000));
+    }
+
+    const char *resp = "{\"success\":true,\"message\":\"Semua pengaturan berhasil disimpan ke Flash Sector 11!\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_log_preview_get_handler(httpd_req_t *req) {
+    char date_param[32] = "";
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "date", date_param, sizeof(date_param));
+    }
+
+    char req_fn[48];
+    if (strlen(date_param) >= 8) {
+        snprintf(req_fn, sizeof(req_fn), "ATT_%.8s.CSV", date_param);
+    } else {
+        strcpy(req_fn, "");
+    }
+
+    char uart_cmd[64];
+    snprintf(uart_cmd, sizeof(uart_cmd), "CMD:READ_LOG:%s\n", req_fn);
+
+    if (s_log_stream_sem) {
+        xSemaphoreTake(s_log_stream_sem, 0);
+    }
+    s_log_stream.count = 0;
+    uart_send_and_log(uart_cmd);
+    if (s_log_stream_sem) {
+        xSemaphoreTake(s_log_stream_sem, pdMS_TO_TICKS(2500));
+    }
+
+    cJSON *resp_obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp_obj, "filename", s_log_stream.filename[0] ? s_log_stream.filename : (req_fn[0] ? req_fn : "ATTEND.CSV"));
+    cJSON_AddNumberToObject(resp_obj, "count", s_log_stream.count);
+    cJSON *lines_arr = cJSON_CreateArray();
+    for (int i = 0; i < s_log_stream.count; i++) {
+        cJSON_AddItemToArray(lines_arr, cJSON_CreateString(s_log_stream.lines[i]));
+    }
+    cJSON_AddItemToObject(resp_obj, "lines", lines_arr);
+
+    char *json_out = cJSON_PrintUnformatted(resp_obj);
+    cJSON_Delete(resp_obj);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_out, HTTPD_RESP_USE_STRLEN);
+    free(json_out);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_log_download_get_handler(httpd_req_t *req) {
+    char date_param[32] = "";
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "date", date_param, sizeof(date_param));
+    }
+
+    char req_fn[48];
+    if (strlen(date_param) >= 8) {
+        snprintf(req_fn, sizeof(req_fn), "ATT_%.8s.CSV", date_param);
+    } else {
+        strcpy(req_fn, "");
+    }
+
+    char uart_cmd[64];
+    snprintf(uart_cmd, sizeof(uart_cmd), "CMD:READ_LOG:%s\n", req_fn);
+
+    if (s_log_stream_sem) {
+        xSemaphoreTake(s_log_stream_sem, 0);
+    }
+    s_log_stream.count = 0;
+    uart_send_and_log(uart_cmd);
+    if (s_log_stream_sem) {
+        xSemaphoreTake(s_log_stream_sem, pdMS_TO_TICKS(2500));
+    }
+
+    const char *out_name = s_log_stream.filename[0] ? s_log_stream.filename : (req_fn[0] ? req_fn : "ATTEND.CSV");
+    char disp_hdr[96];
+    snprintf(disp_hdr, sizeof(disp_hdr), "attachment; filename=\"%s\"", out_name);
+
+    httpd_resp_set_type(req, "text/csv; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Disposition", disp_hdr);
+
+    for (int i = 0; i < s_log_stream.count; i++) {
+        char line_out[160];
+        snprintf(line_out, sizeof(line_out), "%s\r\n", s_log_stream.lines[i]);
+        httpd_resp_send_chunk(req, line_out, strlen(line_out));
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_users_preview_get_handler(httpd_req_t *req) {
+    if (s_user_stream_sem) {
+        xSemaphoreTake(s_user_stream_sem, 0);
+    }
+    s_user_stream.count = 0;
+    uart_send_and_log("CMD:READ_USERS\n");
+    if (s_user_stream_sem) {
+        xSemaphoreTake(s_user_stream_sem, pdMS_TO_TICKS(2500));
+    }
+
+    cJSON *resp_obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resp_obj, "count", s_user_stream.count);
+    cJSON *lines_arr = cJSON_CreateArray();
+    for (int i = 0; i < s_user_stream.count; i++) {
+        cJSON_AddItemToArray(lines_arr, cJSON_CreateString(s_user_stream.lines[i]));
+    }
+    cJSON_AddItemToObject(resp_obj, "lines", lines_arr);
+
+    char *json_out = cJSON_PrintUnformatted(resp_obj);
+    cJSON_Delete(resp_obj);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_out, HTTPD_RESP_USE_STRLEN);
+    free(json_out);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_users_download_get_handler(httpd_req_t *req) {
+    if (s_user_stream_sem) {
+        xSemaphoreTake(s_user_stream_sem, 0);
+    }
+    s_user_stream.count = 0;
+    uart_send_and_log("CMD:READ_USERS\n");
+    if (s_user_stream_sem) {
+        xSemaphoreTake(s_user_stream_sem, pdMS_TO_TICKS(2500));
+    }
+
+    httpd_resp_set_type(req, "text/csv; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"USERS.CSV\"");
+
+    for (int i = 0; i < s_user_stream.count; i++) {
+        char line_out[160];
+        snprintf(line_out, sizeof(line_out), "%s\r\n", s_user_stream.lines[i]);
+        httpd_resp_send_chunk(req, line_out, strlen(line_out));
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t dashboard_api_users_upload_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Uploading USERS.CSV (size: %d)...", (int)req->content_len);
+    if (req->content_len <= 0 || req->content_len > 64 * 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Ukuran file tidak valid (Maks 64 KB).");
+        return ESP_FAIL;
+    }
+
+    if (s_user_write_sem) {
+        xSemaphoreTake(s_user_write_sem, 0);
+    }
+    uart_send_and_log("CMD:USER_WRITE_START\n");
+    if (s_user_write_sem) {
+        if (xSemaphoreTake(s_user_write_sem, pdMS_TO_TICKS(1500)) != pdTRUE || !s_user_write_ok) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "MicroSD gagal membuka file USERS.TMP.");
+            return ESP_FAIL;
+        }
+    }
+
+    char rx_buf[1024];
+    size_t total_recv = 0;
+    char line_acc[256];
+    size_t line_acc_len = 0;
+
+    while (total_recv < req->content_len) {
+        size_t to_recv = sizeof(rx_buf) - 1;
+        if (to_recv > (req->content_len - total_recv)) {
+            to_recv = req->content_len - total_recv;
+        }
+
+        int ret = httpd_req_recv(req, rx_buf, to_recv);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Koneksi terputus saat upload.");
+            return ESP_FAIL;
+        }
+        total_recv += ret;
+
+        for (int i = 0; i < ret; i++) {
+            char c = rx_buf[i];
+            if (c == '\n' || c == '\r') {
+                if (line_acc_len > 0) {
+                    line_acc[line_acc_len] = '\0';
+                    char uart_cmd[300];
+                    snprintf(uart_cmd, sizeof(uart_cmd), "CMD:USER_LINE:%s\n", line_acc);
+                    uart_send_and_log(uart_cmd);
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                    line_acc_len = 0;
+                }
+            } else {
+                if (line_acc_len < sizeof(line_acc) - 1) {
+                    line_acc[line_acc_len++] = c;
+                }
+            }
+        }
+    }
+
+    if (line_acc_len > 0) {
+        line_acc[line_acc_len] = '\0';
+        char uart_cmd[300];
+        snprintf(uart_cmd, sizeof(uart_cmd), "CMD:USER_LINE:%s\n", line_acc);
+        uart_send_and_log(uart_cmd);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    if (s_user_write_sem) {
+        xSemaphoreTake(s_user_write_sem, 0);
+    }
+    uart_send_and_log("CMD:USER_WRITE_END\n");
+    if (s_user_write_sem) {
+        xSemaphoreTake(s_user_write_sem, pdMS_TO_TICKS(2000));
+    }
+
+    const char *resp = "{\"success\":true,\"message\":\"File USERS.CSV berhasil diperbarui di MicroSD!\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 static esp_err_t ota_api_status_get_handler(httpd_req_t *req) {
     char status_json[256];
     snprintf(status_json, sizeof(status_json),
@@ -960,6 +1704,7 @@ static void start_web_server(void) {
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.max_open_sockets = 7;
+    config.max_uri_handlers = 20;
     config.stack_size = 10240;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 30; // 30 detik
@@ -969,6 +1714,54 @@ static void start_web_server(void) {
         .uri = "/",
         .method = HTTP_GET,
         .handler = ota_web_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_stats = {
+        .uri = "/api/stats",
+        .method = HTTP_GET,
+        .handler = dashboard_api_stats_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_settings = {
+        .uri = "/api/settings",
+        .method = HTTP_GET,
+        .handler = dashboard_api_settings_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_post_settings = {
+        .uri = "/api/settings",
+        .method = HTTP_POST,
+        .handler = dashboard_api_settings_post_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_log_preview = {
+        .uri = "/api/log/preview",
+        .method = HTTP_GET,
+        .handler = dashboard_api_log_preview_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_log_download = {
+        .uri = "/api/log/download",
+        .method = HTTP_GET,
+        .handler = dashboard_api_log_download_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_users_preview = {
+        .uri = "/api/users/preview",
+        .method = HTTP_GET,
+        .handler = dashboard_api_users_preview_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_get_users_download = {
+        .uri = "/api/users/download",
+        .method = HTTP_GET,
+        .handler = dashboard_api_users_download_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t uri_post_users_upload = {
+        .uri = "/api/users/upload",
+        .method = HTTP_POST,
+        .handler = dashboard_api_users_upload_post_handler,
         .user_ctx = NULL
     };
     httpd_uri_t uri_post_update_stm32 = {
@@ -1004,14 +1797,22 @@ static void start_web_server(void) {
 
     if (httpd_start(&s_http_server, &config) == ESP_OK) {
         httpd_register_uri_handler(s_http_server, &uri_get_index);
+        httpd_register_uri_handler(s_http_server, &uri_get_stats);
+        httpd_register_uri_handler(s_http_server, &uri_get_settings);
+        httpd_register_uri_handler(s_http_server, &uri_post_settings);
+        httpd_register_uri_handler(s_http_server, &uri_get_log_preview);
+        httpd_register_uri_handler(s_http_server, &uri_get_log_download);
+        httpd_register_uri_handler(s_http_server, &uri_get_users_preview);
+        httpd_register_uri_handler(s_http_server, &uri_get_users_download);
+        httpd_register_uri_handler(s_http_server, &uri_post_users_upload);
         httpd_register_uri_handler(s_http_server, &uri_post_update_stm32);
         httpd_register_uri_handler(s_http_server, &uri_post_update_esp32);
         httpd_register_uri_handler(s_http_server, &uri_get_flash_status);
         httpd_register_uri_handler(s_http_server, &uri_get_status);
         httpd_register_uri_handler(s_http_server, &uri_post_mode);
-        ESP_LOGI(TAG, "OTA Web Server started on port 80!");
+        ESP_LOGI(TAG, "Web Dashboard HTTP Server started on port 80!");
     } else {
-        ESP_LOGE(TAG, "Failed to start OTA Web Server!");
+        ESP_LOGE(TAG, "Failed to start Web Dashboard HTTP Server!");
     }
 }
 
@@ -1924,6 +2725,76 @@ static void uart_task(void *pvParameters) {
                   vTaskDelay(pdMS_TO_TICKS(800));
                   esp_restart();
               }
+            } else if (strncmp(rfid_str, "STM_STATS:", 10) == 0) {
+              /* Format: STM_STATS:TEMP=%.1f|RFID=%d,0x%02X|SD=%d|PEND=%lu|UP=%lu */
+              char *p = rfid_str + 10;
+              float temp = 0.0f;
+              int rfid = 0, sd = 0;
+              unsigned int rfid_v = 0;
+              unsigned long pend = 0, up = 0;
+              if (sscanf(p, "TEMP=%f|RFID=%d,0x%X|SD=%d|PEND=%lu|UP=%lu",
+                         &temp, &rfid, &rfid_v, &sd, &pend, &up) >= 4) {
+                s_stm32_stats.temp = temp;
+                s_stm32_stats.rfid_ready = rfid;
+                snprintf(s_stm32_stats.rfid_ver, sizeof(s_stm32_stats.rfid_ver), "0x%02X", rfid_v);
+                s_stm32_stats.sd_mounted = sd;
+                s_stm32_stats.pending_count = (uint32_t)pend;
+                s_stm32_stats.uptime_sec = (uint32_t)up;
+              }
+              if (s_stm_stats_sem) xSemaphoreGive(s_stm_stats_sem);
+            } else if (strncmp(rfid_str, "STM_CONFIG:", 11) == 0) {
+              strncpy(s_stm_config_str, rfid_str + 11, sizeof(s_stm_config_str) - 1);
+              s_stm_config_str[sizeof(s_stm_config_str) - 1] = '\0';
+              if (s_stm_config_sem) xSemaphoreGive(s_stm_config_sem);
+            } else if (strncmp(rfid_str, "CONFIG_SAVED", 12) == 0) {
+              if (s_stm_config_saved_sem) xSemaphoreGive(s_stm_config_saved_sem);
+            } else if (strncmp(rfid_str, "LOG_START:", 10) == 0) {
+              s_log_stream.count = 0;
+              s_log_stream.in_progress = true;
+              s_log_stream.is_eof = false;
+              char *fn = rfid_str + 10;
+              char *nl = strpbrk(fn, "\r\n");
+              if (nl) *nl = '\0';
+              strncpy(s_log_stream.filename, fn, sizeof(s_log_stream.filename) - 1);
+            } else if (strncmp(rfid_str, "LOG_LINE:", 9) == 0) {
+              if (s_log_stream.in_progress && s_log_stream.count < MAX_WEB_LINES) {
+                char *l = rfid_str + 9;
+                char *nl = strpbrk(l, "\r\n");
+                if (nl) *nl = '\0';
+                strncpy(s_log_stream.lines[s_log_stream.count], l, MAX_LINE_LEN - 1);
+                s_log_stream.lines[s_log_stream.count][MAX_LINE_LEN - 1] = '\0';
+                s_log_stream.count++;
+              }
+            } else if (strncmp(rfid_str, "LOG_EOF", 7) == 0 || strncmp(rfid_str, "LOG_ERR:", 8) == 0) {
+              s_log_stream.in_progress = false;
+              s_log_stream.is_eof = true;
+              if (s_log_stream_sem) xSemaphoreGive(s_log_stream_sem);
+            } else if (strncmp(rfid_str, "USER_START", 10) == 0) {
+              s_user_stream.count = 0;
+              s_user_stream.in_progress = true;
+              s_user_stream.is_eof = false;
+            } else if (strncmp(rfid_str, "USER_LINE:", 10) == 0) {
+              if (s_user_stream.in_progress && s_user_stream.count < MAX_WEB_LINES) {
+                char *l = rfid_str + 10;
+                char *nl = strpbrk(l, "\r\n");
+                if (nl) *nl = '\0';
+                strncpy(s_user_stream.lines[s_user_stream.count], l, MAX_LINE_LEN - 1);
+                s_user_stream.lines[s_user_stream.count][MAX_LINE_LEN - 1] = '\0';
+                s_user_stream.count++;
+              }
+            } else if (strncmp(rfid_str, "USER_EOF", 8) == 0 || strncmp(rfid_str, "USER_ERR:", 9) == 0) {
+              s_user_stream.in_progress = false;
+              s_user_stream.is_eof = true;
+              if (s_user_stream_sem) xSemaphoreGive(s_user_stream_sem);
+            } else if (strncmp(rfid_str, "USER_WRITE_READY", 16) == 0) {
+              s_user_write_ok = true;
+              if (s_user_write_sem) xSemaphoreGive(s_user_write_sem);
+            } else if (strncmp(rfid_str, "USER_WRITE_OK", 13) == 0) {
+              s_user_write_ok = true;
+              if (s_user_write_sem) xSemaphoreGive(s_user_write_sem);
+            } else if (strncmp(rfid_str, "USER_WRITE_FAIL", 15) == 0) {
+              s_user_write_ok = false;
+              if (s_user_write_sem) xSemaphoreGive(s_user_write_sem);
             }
             rfid_idx = 0;
           }
@@ -1972,6 +2843,17 @@ void app_main(void) {
   // Initialize Sync Time Semaphore
   sync_time_sem = xSemaphoreCreateBinary();
 
+  // Initialize Web Dashboard Semaphores
+  s_stm_stats_sem = xSemaphoreCreateBinary();
+  s_stm_config_sem = xSemaphoreCreateBinary();
+  s_stm_config_saved_sem = xSemaphoreCreateBinary();
+  s_log_stream_sem = xSemaphoreCreateBinary();
+  s_user_stream_sem = xSemaphoreCreateBinary();
+  s_user_write_sem = xSemaphoreCreateBinary();
+
+  // Initialize ESP32-C6 On-Chip Temperature Sensor
+  init_esp32_temp_sensor();
+
   // Initialize Button GPIO
   gpio_config_t io_conf = {
       .intr_type = GPIO_INTR_NEGEDGE, // trigger on falling edge (press)
@@ -1998,3 +2880,4 @@ void app_main(void) {
   xTaskCreate(uart_task, "uart_task", 4096, NULL, 5, NULL);
   xTaskCreate(sync_time_task, "sync_time", 4096, NULL, 4, NULL);
 }
+

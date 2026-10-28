@@ -123,8 +123,9 @@ void * lv_draw_buf_align_ex(const lv_draw_buf_handlers_t * handlers, void * data
 
 void lv_draw_buf_invalidate_cache(const lv_draw_buf_t * draw_buf, const lv_area_t * area)
 {
-    LV_ASSERT_NULL(draw_buf);
-    LV_ASSERT_NULL(draw_buf->handlers);
+    if(draw_buf == NULL || draw_buf->handlers == NULL) {
+        return;
+    }
 
     const lv_draw_buf_handlers_t * handlers = draw_buf->handlers;
     if(!handlers->invalidate_cache_cb) {
@@ -145,8 +146,9 @@ void lv_draw_buf_invalidate_cache(const lv_draw_buf_t * draw_buf, const lv_area_
 
 void lv_draw_buf_flush_cache(const lv_draw_buf_t * draw_buf, const lv_area_t * area)
 {
-    LV_ASSERT_NULL(draw_buf);
-    LV_ASSERT_NULL(draw_buf->handlers);
+    if(draw_buf == NULL || draw_buf->handlers == NULL) {
+        return;
+    }
 
     const lv_draw_buf_handlers_t * handlers = draw_buf->handlers;
     if(!handlers->flush_cache_cb) {

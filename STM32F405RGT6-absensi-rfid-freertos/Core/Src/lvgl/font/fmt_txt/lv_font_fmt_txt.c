@@ -99,6 +99,8 @@ const void * lv_font_get_bitmap_fmt_txt(lv_font_glyph_dsc_t * g_dsc, lv_draw_buf
 
     if(g_dsc->req_raw_bitmap) return &fdsc->glyph_bitmap[gdsc->bitmap_index];
 
+    if(draw_buf == NULL || draw_buf->data == NULL) return NULL;
+
     uint8_t * bitmap_out = draw_buf->data;
     int32_t gsize = (int32_t) gdsc->box_w * gdsc->box_h;
     if(gsize == 0) return NULL;

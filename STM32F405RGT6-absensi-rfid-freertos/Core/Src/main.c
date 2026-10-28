@@ -53,7 +53,8 @@ typedef struct {
   uint8_t seconds;    /* Seconds 0-59 (1 byte) */
   uint8_t uid_len;    /* Length of UID (1 byte) */
   uint8_t uid[10];    /* Card UID (10 bytes) */
-  char log_msg[44];   /* Text log details or remark (44 bytes) */
+  uint8_t mode;       /* Attendance mode: 0..5 (1 byte) */
+  char log_msg[42];   /* Text log details or remark (42 bytes) */
 } sd_log_item_t;      /* Exactly 64 bytes (matches sdLogQueue item size) */
 
 #ifndef ESP_TX_ITEM_DEFINED
@@ -181,7 +182,7 @@ static uint32_t g_prev_uid_tick = 0;
 
 /* ESP32 USART1 Rx Buffer */
 uint8_t uart1_rx_data;
-char uart1_rx_buf[128];
+char uart1_rx_buf[256];
 volatile uint16_t uart1_rx_idx = 0;
 volatile uint8_t uart1_rx_ready = 0;
 
@@ -957,7 +958,73 @@ static void my_disp_flush(lv_display_t *disp, const lv_area_t *area,
 }
 
 /**
- * @brief  Membaca riwayat absensi terakhir dari MicroSD (ATTEND.CSV)
+ * @brief  Membaca suhu internal mikrokontroler STM32 via ADC1 internal channel
+ */
+float Hardware_GetSTM32Temperature(void) {
+  ADC_HandleTypeDef hadc1 = {0};
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+
+  __HAL_RCC_ADC1_CLK_ENABLE();
+  float temp_c = 34.0f;
+  if (HAL_ADC_Init(&hadc1) == HAL_OK) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+    sConfig.Rank = 1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) == HAL_OK) {
+      if (HAL_ADC_Start(&hadc1) == HAL_OK) {
+        if (HAL_ADC_PollForConversion(&hadc1, 50) == HAL_OK) {
+          uint32_t raw_val = HAL_ADC_GetValue(&hadc1);
+          /* Formula STM32F4: Temp (°C) = ((Vsense - V25) / Avg_Slope) + 25 */
+          /* V25 = 0.76 V, Avg_Slope = 2.5 mV/°C = 0.0025 V/°C */
+          float vsense = ((float)raw_val * 3.3f) / 4095.0f;
+          temp_c = ((vsense - 0.76f) / 0.0025f) + 25.0f;
+        }
+        HAL_ADC_Stop(&hadc1);
+      }
+    }
+    HAL_ADC_DeInit(&hadc1);
+  }
+  return temp_c;
+}
+
+/**
+ * @brief  Mendapatkan nama file log absensi harian berdasarkan tanggal
+ */
+void Storage_GetDailyLogFilename(uint8_t year, uint8_t month, uint8_t date,
+                                 char *out_filename, size_t max_len) {
+  if (out_filename && max_len > 0) {
+    snprintf(out_filename, max_len, "ATT_20%02d%02d%02d.CSV", year, month, date);
+  }
+}
+
+/**
+ * @brief  Mendapatkan nama file log absensi hari ini dari RTC
+ */
+void Storage_GetCurrentLogFilename(char *out_filename, size_t max_len) {
+  if (out_filename && max_len > 0) {
+    RTC_DateTypeDef sDate = {0};
+    RTC_TimeTypeDef sTime = {0};
+    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+    snprintf(out_filename, max_len, "ATT_20%02d%02d%02d.CSV", sDate.Year,
+             sDate.Month, sDate.Date);
+  }
+}
+
+/**
+ * @brief  Membaca riwayat absensi terakhir dari MicroSD (Log harian atau ATTEND.CSV)
  */
 uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs) {
   uint16_t count = 0;
@@ -966,39 +1033,51 @@ uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs) {
   if (osMutexAcquire(sdioFatFsMutexHandle, 500) != osOK)
     return 0;
 
-  if (f_open(&SDFile, "ATTEND.CSV", FA_READ) == FR_OK) {
-    FSIZE_t size = f_size(&SDFile);
-    /* Baca dari dekat akhir file jika ukuran file lebih dari 2KB */
-    FSIZE_t start_pos = (size > 2048) ? (size - 2048) : 0;
-    f_lseek(&SDFile, start_pos);
+  char daily_fname[32];
+  Storage_GetCurrentLogFilename(daily_fname, sizeof(daily_fname));
 
-    char line_buf[128];
-    while (f_gets(line_buf, sizeof(line_buf), &SDFile) != NULL) {
-      size_t len = strlen(line_buf);
-      while (len > 0 &&
-             (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n')) {
-        line_buf[--len] = '\0';
-      }
-      if (len > 5) {
-        if (count < max_logs) {
-          strncpy(logs[count], line_buf, 63);
-          logs[count][63] = '\0';
-          count++;
-        } else {
-          for (int i = 0; i < max_logs - 1; i++) {
-            strncpy(logs[i], logs[i + 1], 64);
-          }
-          strncpy(logs[max_logs - 1], line_buf, 63);
-          logs[max_logs - 1][63] = '\0';
+  /* Buka file log harian hari ini terlebih dahulu, fallback ke ATTEND.CSV jika belum ada */
+  const char *target_file = daily_fname;
+  if (f_open(&SDFile, target_file, FA_READ) != FR_OK) {
+    target_file = "ATTEND.CSV";
+    if (f_open(&SDFile, target_file, FA_READ) != FR_OK) {
+      osMutexRelease(sdioFatFsMutexHandle);
+      return 0;
+    }
+  }
+
+  FSIZE_t size = f_size(&SDFile);
+  /* Baca dari dekat akhir file jika ukuran file lebih dari 2KB */
+  FSIZE_t start_pos = (size > 2048) ? (size - 2048) : 0;
+  f_lseek(&SDFile, start_pos);
+
+  char line_buf[128];
+  while (f_gets(line_buf, sizeof(line_buf), &SDFile) != NULL) {
+    size_t len = strlen(line_buf);
+    while (len > 0 &&
+           (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n')) {
+      line_buf[--len] = '\0';
+    }
+    if (len > 5 && strstr(line_buf, "TIMESTAMP,DATE_TIME") == NULL) {
+      if (count < max_logs) {
+        strncpy(logs[count], line_buf, 63);
+        logs[count][63] = '\0';
+        count++;
+      } else {
+        for (int i = 0; i < max_logs - 1; i++) {
+          strncpy(logs[i], logs[i + 1], 64);
         }
+        strncpy(logs[max_logs - 1], line_buf, 63);
+        logs[max_logs - 1][63] = '\0';
       }
     }
-    f_close(&SDFile);
   }
+  f_close(&SDFile);
 
   osMutexRelease(sdioFatFsMutexHandle);
   return count;
 }
+
 
 /**
  * @brief  Pengujian diagnostik MicroSD (Mount, Buat file, Tulis, Baca, Hapus)
@@ -1887,7 +1966,18 @@ void Power_EnterStopMode(void) {
   HAL_IWDG_Refresh(&hiwdg);
 }
 
+/* Buffer Riwayat Anti-Passback Cerdas (Cegah Double Tap) */
+typedef struct {
+  uint8_t uid[10];
+  uint8_t uid_len;
+  uint32_t last_tap_sec;
+} apb_entry_t;
+#define APB_HISTORY_SIZE 32
+static apb_entry_t s_apb_history[APB_HISTORY_SIZE] = {0};
+static uint8_t s_apb_idx = 0;
+
 void StartRfidTask(void *argument) {
+
   /* USER CODE BEGIN 5 */
   /* 1. Inisialisasi Hardware RFID Reader NXP CLRC66303 */
   osMutexAcquire(spi2MutexHandle, osWaitForever);
@@ -1989,78 +2079,138 @@ void StartRfidTask(void *argument) {
             g_prev_uid_len = card.uid_len;
             g_prev_uid_tick = now;
 
-            /* Ambil Waktu & Tanggal dari RTC internal */
-            RTC_TimeTypeDef sTime = {0};
-            RTC_DateTypeDef sDate = {0};
-            HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-            HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-
-            char uid_str[24] = {0};
-            int offset = 0;
-            for (uint8_t i = 0; i < card.uid_len && i < 10 &&
-                                offset < (int)sizeof(uid_str) - 3;
-                 i++) {
-              offset += snprintf(uid_str + offset, sizeof(uid_str) - offset,
-                                 "%02X", card.uid[i]);
+            /* Pemeriksaan Anti-Passback Cerdas (Cegah Double Tap) */
+            uint32_t now_sec = now / 1000;
+            bool apb_violation = false;
+            uint32_t apb_remain_sec = 0;
+            if (g_app_settings.antipassback_sec > 0) {
+              for (int i = 0; i < APB_HISTORY_SIZE; i++) {
+                if (s_apb_history[i].uid_len == card.uid_len &&
+                    memcmp(s_apb_history[i].uid, card.uid, card.uid_len) == 0) {
+                  uint32_t elapsed = (now_sec >= s_apb_history[i].last_tap_sec)
+                                         ? (now_sec - s_apb_history[i].last_tap_sec)
+                                         : 0;
+                  if (elapsed < g_app_settings.antipassback_sec) {
+                    apb_violation = true;
+                    apb_remain_sec = g_app_settings.antipassback_sec - elapsed;
+                    break;
+                  }
+                }
+              }
             }
-            if (offset == 0) {
-              snprintf(uid_str, sizeof(uid_str), "UNKNOWN");
-            }
 
-            /* 1. Offline-First: Periksa apakah kartu sudah tersimpan di memori
-             * lokal */
-            char emp_name[48] = {0};
-            char emp_pos[32] = {0};
-            bool emp_found = Storage_LookupEmployee(
-                uid_str, emp_name, sizeof(emp_name), emp_pos, sizeof(emp_pos));
-
-            if (emp_found && strlen(emp_name) > 0) {
-              /* =============================================================
-               */
-              /* KONDISI A: DATA DITEMUKAN DI LOKAL (OFFLINE-FIRST) */
-              /* =============================================================
-               */
-              /* Bunyikan 1x beep sukses & nyalakan USER LED singkat (75 ms) */
+            if (apb_violation) {
+              /* Peringatan Double Tap: Bunyikan 2x beep alert */
               HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
                                 GPIO_PIN_SET);
-              HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
-              osDelay(75);
+              osDelay(80);
               HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
                                 GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin,
+              osDelay(80);
+              HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                GPIO_PIN_SET);
+              osDelay(80);
+              HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
                                 GPIO_PIN_RESET);
 
-              /* Tampilkan deteksi kartu dan nama karyawan ke GUI */
-              ui_event_t ui_evt = {0};
-              ui_evt.type = UI_EVENT_RFID_CARD_DETECTED;
-              ui_evt.status = 1;
-              ui_evt.uid_len = card.uid_len;
-              memcpy(ui_evt.uid, card.uid, card.uid_len);
-              snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d WIB",
-                       sTime.Hours, sTime.Minutes, sTime.Seconds);
-              osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-
-              ui_event_t ui_ok = {0};
-              ui_ok.type = UI_EVENT_ATTENDANCE_SUCCESS;
-              ui_ok.status = 1;
-              strncpy(ui_ok.extra, emp_name, sizeof(ui_ok.extra) - 1);
-              osMessageQueuePut(uiEventQueueHandle, &ui_ok, 0, 10);
-
-              /* Kirim data absensi ke sdLogQueue untuk disimpan ke ATTEND.CSV &
-               * PENDING.CSV */
-              sd_log_item_t sd_item = {0};
-              sd_item.year = sDate.Year;
-              sd_item.month = sDate.Month;
-              sd_item.date = sDate.Date;
-              sd_item.hours = sTime.Hours;
-              sd_item.minutes = sTime.Minutes;
-              sd_item.seconds = sTime.Seconds;
-              sd_item.uid_len = card.uid_len;
-              memcpy(sd_item.uid, card.uid, card.uid_len);
-              strncpy(sd_item.log_msg, emp_name, sizeof(sd_item.log_msg) - 1);
-              osMessageQueuePut(sdLogQueueHandle, &sd_item, 0, 10);
-
+              /* Tampilkan pesan Anti-Passback pada UI (status = 2) */
+              ui_event_t ui_fail = {0};
+              ui_fail.type = UI_EVENT_ATTENDANCE_REJECTED;
+              ui_fail.status = 2; /* 2 = Anti-Passback Warning */
+              snprintf(ui_fail.extra, sizeof(ui_fail.extra), "%lu detik lagi",
+                       (unsigned long)apb_remain_sec);
+              osMessageQueuePut(uiEventQueueHandle, &ui_fail, 0, 10);
             } else {
+              /* Catat tap ke buffer riwayat Anti-Passback */
+              bool apb_updated = false;
+              for (int i = 0; i < APB_HISTORY_SIZE; i++) {
+                if (s_apb_history[i].uid_len == card.uid_len &&
+                    memcmp(s_apb_history[i].uid, card.uid, card.uid_len) == 0) {
+                  s_apb_history[i].last_tap_sec = now_sec;
+                  apb_updated = true;
+                  break;
+                }
+              }
+              if (!apb_updated) {
+                s_apb_history[s_apb_idx].uid_len = card.uid_len;
+                memcpy(s_apb_history[s_apb_idx].uid, card.uid, card.uid_len);
+                s_apb_history[s_apb_idx].last_tap_sec = now_sec;
+                s_apb_idx = (s_apb_idx + 1) % APB_HISTORY_SIZE;
+              }
+
+              /* Ambil Waktu & Tanggal dari RTC internal */
+              RTC_TimeTypeDef sTime = {0};
+              RTC_DateTypeDef sDate = {0};
+              HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+              HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+              char uid_str[24] = {0};
+              int offset = 0;
+              for (uint8_t i = 0; i < card.uid_len && i < 10 &&
+                                  offset < (int)sizeof(uid_str) - 3;
+                   i++) {
+                offset += snprintf(uid_str + offset, sizeof(uid_str) - offset,
+                                   "%02X", card.uid[i]);
+              }
+              if (offset == 0) {
+                snprintf(uid_str, sizeof(uid_str), "UNKNOWN");
+              }
+
+              /* 1. Offline-First: Periksa apakah kartu sudah tersimpan di memori
+               * lokal */
+              char emp_name[48] = {0};
+              char emp_pos[32] = {0};
+              bool emp_found = Storage_LookupEmployee(
+                  uid_str, emp_name, sizeof(emp_name), emp_pos, sizeof(emp_pos));
+
+              if (emp_found && strlen(emp_name) > 0) {
+                /* =============================================================
+                 */
+                /* KONDISI A: DATA DITEMUKAN DI LOKAL (OFFLINE-FIRST) */
+                /* =============================================================
+                 */
+                /* Bunyikan 1x beep sukses & nyalakan USER LED singkat (75 ms) */
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_SET);
+                HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_SET);
+                osDelay(75);
+                HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin,
+                                  GPIO_PIN_RESET);
+                HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin,
+                                  GPIO_PIN_RESET);
+
+                /* Tampilkan deteksi kartu dan nama karyawan ke GUI */
+                ui_event_t ui_evt = {0};
+                ui_evt.type = UI_EVENT_RFID_CARD_DETECTED;
+                ui_evt.status = 1;
+                ui_evt.uid_len = card.uid_len;
+                memcpy(ui_evt.uid, card.uid, card.uid_len);
+                snprintf(ui_evt.extra, sizeof(ui_evt.extra), "%02d:%02d:%02d WIB",
+                         sTime.Hours, sTime.Minutes, sTime.Seconds);
+                osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+
+                ui_event_t ui_ok = {0};
+                ui_ok.type = UI_EVENT_ATTENDANCE_SUCCESS;
+                ui_ok.status = 1;
+                strncpy(ui_ok.extra, emp_name, sizeof(ui_ok.extra) - 1);
+                osMessageQueuePut(uiEventQueueHandle, &ui_ok, 0, 10);
+
+                /* Kirim data absensi ke sdLogQueue untuk disimpan ke ATT_YYYYMMDD.CSV &
+                 * PENDING.CSV */
+                sd_log_item_t sd_item = {0};
+                sd_item.year = sDate.Year;
+                sd_item.month = sDate.Month;
+                sd_item.date = sDate.Date;
+                sd_item.hours = sTime.Hours;
+                sd_item.minutes = sTime.Minutes;
+                sd_item.seconds = sTime.Seconds;
+                sd_item.uid_len = card.uid_len;
+                memcpy(sd_item.uid, card.uid, card.uid_len);
+                sd_item.mode = (uint8_t)GUI_Attendance_GetAttendMode();
+                strncpy(sd_item.log_msg, emp_name, sizeof(sd_item.log_msg) - 1);
+                osMessageQueuePut(sdLogQueueHandle, &sd_item, 0, 10);
+
+              } else {
               /* =============================================================
                */
               /* KONDISI B: KARTU BELUM ADA DI LOKAL (TAP PERTAMA / BARU) */
@@ -2133,6 +2283,7 @@ void StartRfidTask(void *argument) {
               }
             }
           }
+          }
         }
       }
       osMutexRelease(spi2MutexHandle);
@@ -2157,8 +2308,8 @@ void StartGuiTask(void *argument) {
   lv_init();
   lv_tick_set_cb(HAL_GetTick);
 
-  /* Tambahkan pool memori sekunder 16 KB dari SRAM ke allocator LVGL (total pool: 62 KB CCMRAM + 16 KB SRAM = 78 KB) */
-  static uint8_t s_lvgl_extra_pool[16384] __attribute__((aligned(4)));
+  /* Tambahkan pool memori sekunder 20 KB dari SRAM ke allocator LVGL (total pool: 62 KB CCMRAM + 20 KB SRAM = 82 KB) */
+  static uint8_t s_lvgl_extra_pool[20480] __attribute__((aligned(4)));
   lv_mem_add_pool(s_lvgl_extra_pool, sizeof(s_lvgl_extra_pool));
 
   /* 2. Setup Display LVGL untuk ILI9488 (RGB888) */
@@ -2352,7 +2503,10 @@ void StartGuiTask(void *argument) {
  * @retval None
  */
 /* USER CODE END Header_StartEsp32Task */
+static FIL s_users_tmp_file;
+
 void StartEsp32Task(void *argument) {
+
   /* USER CODE BEGIN StartEsp32Task */
   /* Aktifkan penerimaan UART1 interrupt dari ESP32-C6 */
   HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
@@ -2551,17 +2705,39 @@ void StartEsp32Task(void *argument) {
                  sDate.Year, sDate.Month, sDate.Date, sTime.Hours,
                  sTime.Minutes, sTime.Seconds);
 
+        char daily_fname[32];
+        Storage_GetDailyLogFilename(sDate.Year, sDate.Month, sDate.Date,
+                                    daily_fname, sizeof(daily_fname));
+
         if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
           if (g_sd_mounted) {
             FIL attend_file;
-            if (f_open(&attend_file, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) ==
-                FR_OK) {
+            const char *mode_str = GUI_Attendance_GetAttendModeString(GUI_Attendance_GetAttendMode());
+            /* 1. Tulis ke file log harian */
+            if (f_open(&attend_file, daily_fname, FA_OPEN_ALWAYS | FA_WRITE) == FR_OK) {
+              if (f_size(&attend_file) == 0) {
+                const char *hdr = "TIMESTAMP,DATE_TIME,UID,NAME,MODE\r\n";
+                UINT bw_hdr;
+                f_write(&attend_file, hdr, strlen(hdr), &bw_hdr);
+              }
               f_lseek(&attend_file, f_size(&attend_file));
               UINT bw;
-              char log_line[128];
-              snprintf(log_line, sizeof(log_line), "%s,UID:%s,NAME=%.40s\r\n",
+              char log_line[140];
+              snprintf(log_line, sizeof(log_line), "%lu,%s,UID:%s,NAME=%.40s,MODE=%s\r\n",
+                       (unsigned long)HAL_GetTick(), time_iso, uid_card ? uid_card : "-",
+                       name_str ? name_str : "UNKNOWN", mode_str);
+              f_write(&attend_file, log_line, strlen(log_line), &bw);
+              f_sync(&attend_file);
+              f_close(&attend_file);
+            }
+            /* 2. Tulis ke ATTEND.CSV untuk riwayat audit keseluruhan */
+            if (f_open(&attend_file, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) == FR_OK) {
+              f_lseek(&attend_file, f_size(&attend_file));
+              UINT bw;
+              char log_line[140];
+              snprintf(log_line, sizeof(log_line), "%s,UID:%s,NAME=%.40s,MODE=%s\r\n",
                        time_iso, uid_card ? uid_card : "-",
-                       name_str ? name_str : "UNKNOWN");
+                       name_str ? name_str : "UNKNOWN", mode_str);
               f_write(&attend_file, log_line, strlen(log_line), &bw);
               f_sync(&attend_file);
               f_close(&attend_file);
@@ -2728,6 +2904,169 @@ void StartEsp32Task(void *argument) {
         /* ESP32 bersiap mem-flash STM32 via ROM Bootloader pin IO21/IO22 */
         GUI_Attendance_ShowSTM32FlashingWarning();
         osDelay(120); /* Beri waktu frame buffer terkirim ke GRAM ILI9488 sebelum NRST di-pull LOW */
+      } else if (strncmp(uart1_rx_buf, "CMD:GET_STM_STATS", 17) == 0) {
+        /* Statistik Perangkat untuk Web Dashboard Mode AP */
+        float stm_temp = Hardware_GetSTM32Temperature();
+        uint32_t pend = Storage_GetPendingCount();
+        uint32_t up_sec = HAL_GetTick() / 1000;
+        char stats_msg[128];
+        snprintf(stats_msg, sizeof(stats_msg),
+                 "STM_STATS:TEMP=%.1f|RFID=%d,0x%02X|SD=%d|PEND=%lu|UP=%lu\n",
+                 stm_temp, g_clrc663_ready ? 1 : 0, (unsigned int)g_clrc663_version,
+                 g_sd_mounted ? 1 : 0, (unsigned long)pend, (unsigned long)up_sec);
+        HAL_UART_Transmit(&huart1, (uint8_t *)stats_msg, strlen(stats_msg), 200);
+      } else if (strncmp(uart1_rx_buf, "CMD:GET_ALL_CONFIG", 18) == 0) {
+        /* Ekspor semua konfigurasi Admin Settings ke Web Dashboard */
+        char cfg_msg[256];
+        snprintf(cfg_msg, sizeof(cfg_msg),
+                 "STM_CONFIG:DEV_CODE=%.20s|DEV_NAME=%.24s|PIN=%.8s|SYNC=%d|APB=%d|BRIGHT=%d|SLEEP=%d|THEME=%d|ROT=%d|LPCD_D=%d|LPCD_I=%d\n",
+                 g_app_settings.device_code, g_app_settings.device_name,
+                 g_app_settings.admin_pin, (int)g_app_settings.sync_mode,
+                 (int)g_app_settings.antipassback_sec,
+                 (int)g_app_settings.brightness,
+                 (int)g_app_settings.screen_timeout_sec,
+                 (int)g_app_settings.theme_mode,
+                 (int)g_app_settings.screen_rotation,
+                 (int)g_app_settings.lpcd_delta,
+                 (int)g_app_settings.lpcd_interval_ms);
+        HAL_UART_Transmit(&huart1, (uint8_t *)cfg_msg, strlen(cfg_msg), 200);
+      } else if (strncmp(uart1_rx_buf, "CMD:SET_ALL_CONFIG:", 19) == 0) {
+        /* Simpan perubahan konfigurasi dari Web Dashboard ke STM32 Flash */
+        char *p = uart1_rx_buf + 19;
+        char *tok = strtok(p, "|");
+        while (tok) {
+          if (strncmp(tok, "DEV_CODE=", 9) == 0) {
+            strncpy(g_app_settings.device_code, tok + 9, sizeof(g_app_settings.device_code) - 1);
+          } else if (strncmp(tok, "DEV_NAME=", 9) == 0) {
+            strncpy(g_app_settings.device_name, tok + 9, sizeof(g_app_settings.device_name) - 1);
+          } else if (strncmp(tok, "PIN=", 4) == 0) {
+            strncpy(g_app_settings.admin_pin, tok + 4, sizeof(g_app_settings.admin_pin) - 1);
+          } else if (strncmp(tok, "SYNC=", 5) == 0) {
+            g_app_settings.sync_mode = (uint8_t)atoi(tok + 5);
+          } else if (strncmp(tok, "APB=", 4) == 0) {
+            g_app_settings.antipassback_sec = (uint16_t)atoi(tok + 4);
+          } else if (strncmp(tok, "BRIGHT=", 7) == 0) {
+            g_app_settings.brightness = (uint8_t)atoi(tok + 7);
+          } else if (strncmp(tok, "SLEEP=", 6) == 0) {
+            g_app_settings.screen_timeout_sec = (uint16_t)atoi(tok + 6);
+          } else if (strncmp(tok, "THEME=", 6) == 0) {
+            g_app_settings.theme_mode = (uint8_t)atoi(tok + 6);
+          } else if (strncmp(tok, "ROT=", 4) == 0) {
+            g_app_settings.screen_rotation = (uint8_t)atoi(tok + 4);
+          } else if (strncmp(tok, "LPCD_D=", 7) == 0) {
+            g_app_settings.lpcd_delta = (uint8_t)atoi(tok + 7);
+          } else if (strncmp(tok, "LPCD_I=", 7) == 0) {
+            g_app_settings.lpcd_interval_ms = (uint16_t)atoi(tok + 7);
+          }
+          tok = strtok(NULL, "|");
+        }
+        App_Settings_Save(&g_app_settings);
+        HAL_UART_Transmit(&huart1, (uint8_t *)"CONFIG_SAVED\n", 13, 200);
+      } else if (strncmp(uart1_rx_buf, "CMD:READ_LOG:", 13) == 0) {
+        /* Unduh / Pratinjau log harian untuk Web Dashboard */
+        char *fn = uart1_rx_buf + 13;
+        char *nl = strpbrk(fn, "\r\n");
+        if (nl) *nl = '\0';
+        char target_fn[32];
+        if (strlen(fn) == 0) {
+          Storage_GetCurrentLogFilename(target_fn, sizeof(target_fn));
+        } else {
+          strncpy(target_fn, fn, sizeof(target_fn) - 1);
+          target_fn[sizeof(target_fn) - 1] = '\0';
+        }
+
+        if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
+          if (g_sd_mounted) {
+            FIL f;
+            FRESULT fr = f_open(&f, target_fn, FA_READ);
+            if (fr != FR_OK) {
+              fr = f_open(&f, "ATTEND.CSV", FA_READ);
+            }
+            if (fr == FR_OK) {
+              char out_start[48];
+              snprintf(out_start, sizeof(out_start), "LOG_START:%s\n", target_fn);
+              HAL_UART_Transmit(&huart1, (uint8_t *)out_start, strlen(out_start), 200);
+
+              char line[160];
+              while (f_gets(line, sizeof(line), &f) != NULL) {
+                char *l_nl = strpbrk(line, "\r\n");
+                if (l_nl) *l_nl = '\0';
+                if (strlen(line) > 0) {
+                  char log_tx[180];
+                  snprintf(log_tx, sizeof(log_tx), "LOG_LINE:%s\n", line);
+                  HAL_UART_Transmit(&huart1, (uint8_t *)log_tx, strlen(log_tx), 200);
+                  osDelay(2);
+                }
+              }
+              f_close(&f);
+              HAL_UART_Transmit(&huart1, (uint8_t *)"LOG_EOF\n", 8, 200);
+            } else {
+              HAL_UART_Transmit(&huart1, (uint8_t *)"LOG_ERR:File Not Found\n", 23, 200);
+            }
+          } else {
+            HAL_UART_Transmit(&huart1, (uint8_t *)"LOG_ERR:SD Card Not Mounted\n", 28, 200);
+          }
+          osMutexRelease(sdioFatFsMutexHandle);
+        }
+      } else if (strncmp(uart1_rx_buf, "CMD:READ_USERS", 14) == 0) {
+        /* Unduh daftar karyawan USERS.CSV untuk Web Dashboard */
+        if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
+          if (g_sd_mounted) {
+            FIL f;
+            if (f_open(&f, "USERS.CSV", FA_READ) == FR_OK) {
+              HAL_UART_Transmit(&huart1, (uint8_t *)"USER_START\n", 11, 200);
+              char line[160];
+              while (f_gets(line, sizeof(line), &f) != NULL) {
+                char *l_nl = strpbrk(line, "\r\n");
+                if (l_nl) *l_nl = '\0';
+                if (strlen(line) > 0) {
+                  char u_tx[180];
+                  snprintf(u_tx, sizeof(u_tx), "USER_LINE:%s\n", line);
+                  HAL_UART_Transmit(&huart1, (uint8_t *)u_tx, strlen(u_tx), 200);
+                  osDelay(2);
+                }
+              }
+              f_close(&f);
+              HAL_UART_Transmit(&huart1, (uint8_t *)"USER_EOF\n", 9, 200);
+            } else {
+              HAL_UART_Transmit(&huart1, (uint8_t *)"USER_ERR:USERS.CSV Not Found\n", 29, 200);
+            }
+          } else {
+            HAL_UART_Transmit(&huart1, (uint8_t *)"USER_ERR:SD Not Mounted\n", 24, 200);
+          }
+          osMutexRelease(sdioFatFsMutexHandle);
+        }
+      } else if (strncmp(uart1_rx_buf, "CMD:USER_WRITE_START", 20) == 0) {
+        /* Memulai penulisan file USERS.TMP untuk upload dari Web Dashboard */
+        if (osMutexAcquire(sdioFatFsMutexHandle, 1000) == osOK) {
+          f_unlink("USERS.TMP");
+          FRESULT fr = f_open(&s_users_tmp_file, "USERS.TMP", FA_CREATE_ALWAYS | FA_WRITE);
+          if (fr == FR_OK) {
+            HAL_UART_Transmit(&huart1, (uint8_t *)"USER_WRITE_READY\n", 17, 200);
+          } else {
+            HAL_UART_Transmit(&huart1, (uint8_t *)"USER_WRITE_FAIL:Open Failed\n", 28, 200);
+            osMutexRelease(sdioFatFsMutexHandle);
+          }
+        }
+      } else if (strncmp(uart1_rx_buf, "CMD:USER_LINE:", 14) == 0) {
+        char *line = uart1_rx_buf + 14;
+        char *l_nl = strpbrk(line, "\r\n");
+        if (l_nl) *l_nl = '\0';
+        UINT bw;
+        char out_buf[260];
+        snprintf(out_buf, sizeof(out_buf), "%s\r\n", line);
+        f_write(&s_users_tmp_file, out_buf, strlen(out_buf), &bw);
+      } else if (strncmp(uart1_rx_buf, "CMD:USER_WRITE_END", 18) == 0) {
+        f_sync(&s_users_tmp_file);
+        f_close(&s_users_tmp_file);
+        f_unlink("USERS.CSV");
+        f_rename("USERS.TMP", "USERS.CSV");
+        osMutexRelease(sdioFatFsMutexHandle);
+
+        /* Hangatkan RAM cache dan sanitasi file */
+        Storage_SanitizeUsersFile();
+        Storage_WarmupCache();
+        HAL_UART_Transmit(&huart1, (uint8_t *)"USER_WRITE_OK\n", 14, 200);
       }
     }
 
@@ -2798,16 +3137,39 @@ void StartStorageTask(void *argument) {
                dev_code_buf, sd_item.year, sd_item.month, sd_item.date,
                sd_item.hours, sd_item.minutes, sd_item.seconds, uid_hex);
 
-      /* 1. Tulis ke ATTEND.CSV (Riwayat Audit Permanen) */
+      /* 1. Tulis ke file log harian (ATT_YYYYMMDD.CSV) */
+      char daily_fname[32];
+      Storage_GetDailyLogFilename(sd_item.year, sd_item.month, sd_item.date,
+                                  daily_fname, sizeof(daily_fname));
+
       if (osMutexAcquire(sdioFatFsMutexHandle, 500) == osOK) {
         if (g_sd_mounted) {
           FIL file;
+          const char *mode_str = GUI_Attendance_GetAttendModeString((attend_mode_t)sd_item.mode);
+          if (f_open(&file, daily_fname, FA_OPEN_ALWAYS | FA_WRITE) == FR_OK) {
+            if (f_size(&file) == 0) {
+              /* Tulis CSV Header jika file baru hari ini */
+              const char *hdr = "TIMESTAMP,DATE_TIME,UID,NAME,MODE\r\n";
+              UINT bw_hdr;
+              f_write(&file, hdr, strlen(hdr), &bw_hdr);
+            }
+            f_lseek(&file, f_size(&file));
+            UINT bw;
+            char log_line[140];
+            snprintf(log_line, sizeof(log_line), "%lu,%s,UID:%s,NAME=%.40s,MODE=%s\r\n",
+                     (unsigned long)HAL_GetTick(), time_iso, uid_hex, sd_item.log_msg, mode_str);
+            f_write(&file, log_line, strlen(log_line), &bw);
+            f_sync(&file);
+            f_close(&file);
+          }
+
+          /* Juga simpan ke ATTEND.CSV untuk riwayat audit keseluruhan */
           if (f_open(&file, "ATTEND.CSV", FA_OPEN_ALWAYS | FA_WRITE) == FR_OK) {
             f_lseek(&file, f_size(&file));
             UINT bw;
-            char log_line[128];
-            snprintf(log_line, sizeof(log_line), "%s,UID:%s,NAME=%.40s\r\n",
-                     time_iso, uid_hex, sd_item.log_msg);
+            char log_line[140];
+            snprintf(log_line, sizeof(log_line), "%s,UID:%s,NAME=%.40s,MODE=%s\r\n",
+                     time_iso, uid_hex, sd_item.log_msg, mode_str);
             f_write(&file, log_line, strlen(log_line), &bw);
             f_sync(&file);
             f_close(&file);

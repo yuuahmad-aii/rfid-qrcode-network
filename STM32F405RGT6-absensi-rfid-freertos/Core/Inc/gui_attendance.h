@@ -120,6 +120,24 @@ void GUI_Attendance_ShowSDWarning(bool show);
 uint16_t Storage_ReadRecentLogs(char logs[][64], uint16_t max_logs);
 
 /* ========================================================================== */
+/*                ATTENDANCE MODES (6 MODE PRESENSI)                          */
+/* ========================================================================== */
+typedef enum {
+    ATTEND_MODE_MASUK = 0,
+    ATTEND_MODE_ISTIRAHAT_MULAI,
+    ATTEND_MODE_ISTIRAHAT_SELESAI,
+    ATTEND_MODE_PULANG,
+    ATTEND_MODE_IZIN_KELUAR,
+    ATTEND_MODE_IZIN_MASUK,
+    ATTEND_MODE_MAX
+} attend_mode_t;
+
+extern volatile attend_mode_t g_current_attend_mode;
+attend_mode_t GUI_Attendance_GetAttendMode(void);
+const char* GUI_Attendance_GetAttendModeString(attend_mode_t mode);
+void GUI_Attendance_SetAttendMode(attend_mode_t mode);
+
+/* ========================================================================== */
 /*                PERSISTENT CONFIGURATION (STM32 FLASH SECTOR 11)            */
 /* ========================================================================== */
 #define SETTINGS_FLASH_SECTOR       FLASH_SECTOR_11
@@ -150,7 +168,8 @@ typedef struct {
     uint8_t  lpcd_delta;         /* LPCD threshold delta: 1 - 10 (default: 3) (1 byte) */
     uint16_t lpcd_interval_ms;   /* LPCD sleep interval: 150, 250, 300, 500 ms (default: 300) (2 bytes) */
     uint8_t  screen_rotation;    /* 0 = Normal (Port Bawah), 1 = Terbalik (Port Atas) (1 byte) */
-    uint8_t  reserved[57];       /* Padding to exactly 256 bytes total */
+    uint16_t antipassback_sec;   /* Anti-passback cooldown: 0 (disabled), 15, 30, 60, 120, 300, 600s (2 bytes) */
+    uint8_t  reserved[55];       /* Padding to exactly 256 bytes total */
 } app_settings_t;
 
 extern app_settings_t g_app_settings;
@@ -163,6 +182,9 @@ void App_Settings_ResetDefaults(app_settings_t *settings);
 /* Screen Rotation & OTA Modal Controls */
 void GUI_Attendance_SetScreenRotation(uint8_t rot);
 void GUI_Attendance_ShowOTAModal(bool show, const char *ssid, const char *pass, const char *ip);
+void Storage_GetDailyLogFilename(uint8_t year, uint8_t month, uint8_t date, char *out_name, size_t max_len);
+void Storage_GetCurrentLogFilename(char *out_name, size_t max_len);
+float Hardware_GetSTM32Temperature(void);
 void GUI_Attendance_UpdateOTAProgress(int percent, const char *status_msg);
 void GUI_Attendance_ShowSTM32FlashingWarning(void);
 
