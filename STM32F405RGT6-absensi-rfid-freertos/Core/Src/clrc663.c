@@ -566,57 +566,102 @@ static bool    s_lpcd_active = false;
  */
 bool CLRC663_LPCD_Calibrate(uint8_t *out_i, uint8_t *out_q) {
     CLRC663_Cmd_Idle();
+    /* Matikan routing IRQ ke pin fisik PA15 selama kalibrasi agar tidak memicu EXTI */
+    CLRC663_WriteReg(CLRC663_REG_IRQ0EN, 0x00);
+    CLRC663_WriteReg(CLRC663_REG_IRQ1EN, 0x00);
     CLRC663_ClearIRQ0();
     CLRC663_ClearIRQ1();
     CLRC663_FlushFIFO();
 
-    /* 1. Set threshold window seluas mungkin [0, 63] agar kalibrasi tidak tertrigger interupsi */
-    CLRC663_WriteReg(CLRC663_REG_LPCD_QMIN, 0xC0);
-    CLRC663_WriteReg(CLRC663_REG_LPCD_QMAX, 0xFF);
-    CLRC663_WriteReg(CLRC663_REG_LPCD_IMIN, 0xC0);
+    /* Simpan register RCV dan RXANA sebelum diubah */
+    uint8_t orig_rcv = CLRC663_ReadReg(CLRC663_REG_RCV);
+    uint8_t orig_rxana = CLRC663_ReadReg(CLRC663_REG_RXANA);
 
-    /* 2. Driver mode aktif untuk pengukuran beban RF antena */
+    /* 1. Metode resmi NXP AN11145: Set window mustahil (QMin=63, QMax=0, IMin=63, IMax=0)
+     *    agar saat Standby+LPCD (0x81) melakukan burst pertama, chip PASTI keluar dari
+     *    Standby ke IDLE dengan hasil ADC I/Q yang 100% identik dengan kondisi sleep aktual! */
+    CLRC663_WriteReg(CLRC663_REG_LPCD_QMIN, 0x3F);
+    CLRC663_WriteReg(CLRC663_REG_LPCD_QMAX, 0x00);
+    CLRC663_WriteReg(CLRC663_REG_LPCD_IMIN, 0x3F);
+
+    /* 2. Konfigurasi analog front-end IDENTIK dengan CLRC663_LPCD_Start */
     CLRC663_WriteReg(CLRC663_REG_DRVMOD, 0x89);
-
-    /* 3. CLRC66303: Aktifkan LPCD_TX_HIGH dan LPCD_FILTER */
     CLRC663_WriteReg(CLRC663_REG_LPCD_OPTIONS, CLRC663_LPCD_OPTIONS_TX_HIGH | CLRC663_LPCD_OPTIONS_FILTER);
+    CLRC663_WriteReg(CLRC663_REG_RCV, orig_rcv | CLRC663_RCV_RX_ADCMODE);
+    CLRC663_WriteReg(CLRC663_REG_RXANA, 0x03); /* Gain maksimum 60 dB */
 
-    /* 4. Setup Timer 3 untuk durasi pulse RF LPCD (~18 ticks = ~15 us) */
+    /* 3. Setup Timer 3 untuk durasi pulse RF LPCD (~15 us) */
     CLRC663_WriteReg(CLRC663_REG_T3CONTROL, 0x00);
     CLRC663_WriteReg(CLRC663_REG_T3RELOADHI, 0x00);
     CLRC663_WriteReg(CLRC663_REG_T3RELOADLO, 0x18);
 
-    /* 5. Setup Timer 4 dengan reload minimal (5) agar burst kalibrasi segera tertrigger */
-    CLRC663_WriteReg(CLRC663_REG_T4RELOADHI, 0x00);
-    CLRC663_WriteReg(CLRC663_REG_T4RELOADLO, 0x05);
-    CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALHI, 0x00);
-    CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALLO, 0x05);
+    /* 4. Ambil 3 sampel Standby+LPCD (0x81) dengan Timer 4 @ 2 kHz LFO (10 ms) */
+    uint16_t i_sum = 0;
+    uint16_t q_sum = 0;
+    uint8_t valid_samples = 0;
 
-    /* 6. Mulai Timer 4 (AutoLPCD + AutoRestart + 16kHz LFO + StartNow + Running = 0xF8) */
-    CLRC663_WriteReg(CLRC663_REG_T4CONTROL, 0xF8);
+    for (uint8_t s = 0; s < 3; s++) {
+        CLRC663_Cmd_Idle();
+        CLRC663_WriteReg(CLRC663_REG_T4CONTROL, (1 << 6)); /* Stop T4 */
 
-    /* 7. Reset LPCD result & bersihkan flag IRQ sebelumnya */
-    CLRC663_WriteReg(CLRC663_REG_LPCD_Q_RESULT, CLRC663_LPCD_RESULT_Q_IRQ_CLR);
+        /* Reload T4 = 20 ticks @ 2 kHz LFO = 10 ms */
+        CLRC663_WriteReg(CLRC663_REG_T4RELOADHI, 0x00);
+        CLRC663_WriteReg(CLRC663_REG_T4RELOADLO, 0x14);
+        CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALHI, 0x00);
+        CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALLO, 0x14);
 
-    /* 8. Hubungkan output mixer ke ADC (Rx_ADCmode = 1) dan set gain maksimum */
-    uint8_t orig_rcv = CLRC663_ReadReg(CLRC663_REG_RCV);
-    uint8_t orig_rxana = CLRC663_ReadReg(CLRC663_REG_RXANA);
-    CLRC663_WriteReg(CLRC663_REG_RCV, orig_rcv | CLRC663_RCV_RX_ADCMODE);
-    CLRC663_WriteReg(CLRC663_REG_RXANA, 0x03); /* Gain maksimum 60 dB */
+        /* Reset LPCD result & bersihkan flag IRQ */
+        CLRC663_WriteReg(CLRC663_REG_LPCD_Q_RESULT, CLRC663_LPCD_RESULT_Q_IRQ_CLR);
+        CLRC663_ClearIRQ0();
+        CLRC663_ClearIRQ1();
 
-    /* 9. Jalankan 1 siklus pengukuran LPCD */
-    CLRC663_WriteReg(CLRC663_REG_COMMAND, CLRC663_CMD_LPCD);
-    HAL_Delay(10);
+        /* Mulai Timer 4 (0xDD = Running|StartNow|AutoLPCD|AutoRestart|AutoWakeUp|2kHz) */
+        CLRC663_WriteReg(CLRC663_REG_T4CONTROL, 0xDD);
+        /* Masuk Standby + LPCD (0x81): setelah 10ms chip bangun, ukur I/Q, dan otomatis
+         * kembali ke IDLE karena window QMin>QMax selalu memicu LPCD_IRQ */
+        CLRC663_WriteReg(CLRC663_REG_COMMAND, 0x81);
 
-    /* 10. Baca hasil pengukuran baseline kanal I dan Q */
-    uint8_t i_val = CLRC663_ReadReg(CLRC663_REG_LPCD_I_RESULT) & 0x3F;
-    uint8_t q_val = CLRC663_ReadReg(CLRC663_REG_LPCD_Q_RESULT) & 0x3F;
+        /* Tunggu hingga LPCD_IRQ terbit (chip otomatis keluar Standby -> IDLE, ~12-15 ms) */
+        HAL_Delay(22);
 
-    /* 11. Hentikan command dan matikan Timer 4 */
-    CLRC663_Cmd_Idle();
-    CLRC663_WriteReg(CLRC663_REG_T4CONTROL, (1 << 6)); /* Stop T4 */
+        uint8_t i_sample = CLRC663_ReadReg(CLRC663_REG_LPCD_I_RESULT) & 0x3F;
+        uint8_t q_sample = CLRC663_ReadReg(CLRC663_REG_LPCD_Q_RESULT) & 0x3F;
 
-    /* 12. Kembalikan register RCV dan RXANA */
+        CLRC663_Cmd_Idle();
+        CLRC663_WriteReg(CLRC663_REG_T4CONTROL, (1 << 6));
+
+        if ((i_sample > 0 && i_sample < 63) || (q_sample > 0 && q_sample < 63)) {
+            i_sum += i_sample;
+            q_sum += q_sample;
+            valid_samples++;
+        }
+    }
+
+    /* Fallback non-standby (0x01) jika karena suatu hal Standby calibration tidak memberi sampel */
+    if (valid_samples == 0) {
+        CLRC663_WriteReg(CLRC663_REG_LPCD_QMIN, 0xC0);
+        CLRC663_WriteReg(CLRC663_REG_LPCD_QMAX, 0xFF);
+        CLRC663_WriteReg(CLRC663_REG_LPCD_IMIN, 0xC0);
+        CLRC663_WriteReg(CLRC663_REG_T4RELOADHI, 0x00);
+        CLRC663_WriteReg(CLRC663_REG_T4RELOADLO, 0x05);
+        CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALHI, 0x00);
+        CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALLO, 0x05);
+        CLRC663_WriteReg(CLRC663_REG_LPCD_Q_RESULT, CLRC663_LPCD_RESULT_Q_IRQ_CLR);
+        CLRC663_WriteReg(CLRC663_REG_T4CONTROL, 0xF8);
+        CLRC663_WriteReg(CLRC663_REG_COMMAND, CLRC663_CMD_LPCD);
+        HAL_Delay(10);
+        uint8_t i_fb = CLRC663_ReadReg(CLRC663_REG_LPCD_I_RESULT) & 0x3F;
+        uint8_t q_fb = CLRC663_ReadReg(CLRC663_REG_LPCD_Q_RESULT) & 0x3F;
+        CLRC663_Cmd_Idle();
+        CLRC663_WriteReg(CLRC663_REG_T4CONTROL, (1 << 6));
+        if (i_fb != 0 || q_fb != 0) {
+            i_sum = i_fb;
+            q_sum = q_fb;
+            valid_samples = 1;
+        }
+    }
+
+    /* 5. Kembalikan register RCV dan RXANA */
     CLRC663_WriteReg(CLRC663_REG_RCV, orig_rcv);
     CLRC663_WriteReg(CLRC663_REG_RXANA, orig_rxana);
 
@@ -624,10 +669,12 @@ bool CLRC663_LPCD_Calibrate(uint8_t *out_i, uint8_t *out_q) {
     CLRC663_ClearIRQ1();
     CLRC663_WriteReg(CLRC663_REG_LPCD_Q_RESULT, CLRC663_LPCD_RESULT_Q_IRQ_CLR);
 
-    /* Fallback default jika pembacaan menghasilkan 0 */
-    if (i_val == 0 && q_val == 0) {
-        i_val = 20;
-        q_val = 20;
+    uint8_t i_val = 20;
+    uint8_t q_val = 20;
+    if (valid_samples > 0) {
+        /* Pembulatan ke bilangan bulat terdekat */
+        i_val = (uint8_t)((i_sum + (valid_samples / 2)) / valid_samples);
+        q_val = (uint8_t)((q_sum + (valid_samples / 2)) / valid_samples);
     }
 
     s_lpcd_i_base = i_val;
@@ -644,11 +691,11 @@ bool CLRC663_LPCD_Calibrate(uint8_t *out_i, uint8_t *out_q) {
  *         Transmitter RF berpulsasi hanya beberapa mikrodetik setiap sleep_interval_ms (300 ms).
  *         Chip tidur dengan konsumsi ~30-50 uA di antara pulsa pengamatan.
  *         Saat kartu menempel, perbedaan beban antena mentrigger IRQ (PA15).
- * @param  delta Threshold toleransi detuning I/Q (rekomendasi: 1..3, default: 2)
+ * @param  delta Threshold toleransi detuning I/Q (rekomendasi: 1..3, default: 3)
  * @param  sleep_interval_ms Periode sampling (misal 300 ms)
  */
 void CLRC663_LPCD_Start(uint8_t delta, uint16_t sleep_interval_ms) {
-    if (delta == 0) delta = 2;
+    if (delta == 0) delta = 3;
     if (sleep_interval_ms == 0) sleep_interval_ms = 300;
 
     /* Pastikan kalibrasi baseline sudah ada */
@@ -674,67 +721,50 @@ void CLRC663_LPCD_Start(uint8_t delta, uint16_t sleep_interval_ms) {
     uint8_t reg40 = ((i_max & 0x0C) << 4) | (q_max & 0x3F);
     uint8_t reg41 = ((i_max & 0x03) << 6) | (i_min & 0x3F);
 
+    /* 1. Hentikan command & matikan IRQ pin selama konfigurasi register */
     CLRC663_Cmd_Idle();
+    CLRC663_WriteReg(CLRC663_REG_T4CONTROL, (1 << 6)); /* Stop T4 */
+    CLRC663_WriteReg(CLRC663_REG_IRQ0EN, 0x00);
+    CLRC663_WriteReg(CLRC663_REG_IRQ1EN, 0x00);
+
+    /* 2. Tulis threshold window I/Q */
     CLRC663_WriteReg(CLRC663_REG_LPCD_QMIN, reg3F);
     CLRC663_WriteReg(CLRC663_REG_LPCD_QMAX, reg40);
     CLRC663_WriteReg(CLRC663_REG_LPCD_IMIN, reg41);
 
-    /* Setup Timer 3: Digunakan internal hardware untuk durasi RF ON burst saat LPCD (~15 us) */
+    /* 3. Setup Timer 3: durasi RF ON burst saat LPCD (~15 us) */
     CLRC663_WriteReg(CLRC663_REG_T3CONTROL, 0x00);
     CLRC663_WriteReg(CLRC663_REG_T3RELOADHI, 0x00);
     CLRC663_WriteReg(CLRC663_REG_T3RELOADLO, 0x18);
 
-    /* Konfigurasi Timer 4 sebagai wake-up timer:
-     * Clock input 2 kHz LFO (01b -> 0.5 ms per tick).
-     * Reload = sleep_interval_ms * 2. Untuk 300 ms = 600 (0x0258).
-     */
+    /* 4. Konfigurasi Timer 4 sebagai wake-up timer (2 kHz LFO -> 0.5 ms per tick) */
     uint16_t reload = (uint16_t)(sleep_interval_ms * 2);
     CLRC663_WriteReg(CLRC663_REG_T4RELOADHI, (uint8_t)(reload >> 8));
     CLRC663_WriteReg(CLRC663_REG_T4RELOADLO, (uint8_t)(reload & 0xFF));
     CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALHI, (uint8_t)(reload >> 8));
     CLRC663_WriteReg(CLRC663_REG_T4COUNTERVALLO, (uint8_t)(reload & 0xFF));
 
-    /* CLRC66303: Aktifkan fitur khusus CLRC663 plus pada register LPCD_OPTIONS (0x3A)
-     * Bit 3: LPCD_TX_HIGH (Driver tegangan output = full VTVDD untuk jangkauan deteksi maksimal)
-     * Bit 2: LPCD_FILTER (Digital filter untuk menepis noise spike) */
+    /* 5. Konfigurasi analog front-end & driver SEBELUM clear IRQ dan aktifkan IRQ1EN (NXP AN11145) */
     CLRC663_WriteReg(CLRC663_REG_LPCD_OPTIONS, CLRC663_LPCD_OPTIONS_TX_HIGH | CLRC663_LPCD_OPTIONS_FILTER);
-
-    /* Hubungkan output mixer langsung ke ADC (Rx_ADCmode = 1) & set gain penerima */
     uint8_t rcv = CLRC663_ReadReg(CLRC663_REG_RCV);
     CLRC663_WriteReg(CLRC663_REG_RCV, rcv | CLRC663_RCV_RX_ADCMODE);
     CLRC663_WriteReg(CLRC663_REG_RXANA, 0x03); /* Gain maksimum 60 dB */
+    CLRC663_WriteReg(CLRC663_REG_DRVMOD, 0x89); /* TxEn=1, Tx2Inv=1 */
 
-    /* Reset detector & bersihkan flag IRQ sebelumnya */
+    /* 6. Reset detector & bersihkan semua flag IRQ sebelum mengaktifkan IRQ pin */
     CLRC663_WriteReg(CLRC663_REG_LPCD_Q_RESULT, CLRC663_LPCD_RESULT_Q_IRQ_CLR);
     CLRC663_ClearIRQ0();
     CLRC663_ClearIRQ1();
 
-    /* Aktifkan interupsi LPCD dan rute ke pin fisik IRQ (PA15).
-     * IRQ0EN: IRQ_INV = 0 (Active HIGH).
-     * IRQ1EN: PushPull | PinEn | LPCD_IRQEn (0xE0)
-     */
+    /* 7. Aktifkan interupsi LPCD dan rute ke pin fisik IRQ (PA15, Active HIGH Push-Pull) */
     CLRC663_WriteReg(CLRC663_REG_IRQ0EN, 0x00);
     CLRC663_WriteReg(CLRC663_REG_IRQ1EN,
                      CLRC663_IRQ1EN_IRQ_PUSHPULL |
                      CLRC663_IRQ1EN_IRQ_PINEN |
                      CLRC663_IRQ1EN_LPCD_IRQEN);
 
-    /* Driver mode: TxEn=1, Tx2Inv=1 -> 0x89 (Wajib sesuai NXP AN11145) */
-    CLRC663_WriteReg(CLRC663_REG_DRVMOD, 0x89);
-
-    /* Konfigurasi Timer T4 dan mulai Timer 4:
-     * Bit 7: T4Running = 1
-     * Bit 6: T4StartStopNow = 1
-     * Bit 4: T4AutoLPCD = 1
-     * Bit 3: T4AutoRestart = 1
-     * Bit 2: T4AutoWakeUp = 1
-     * Bit 0: T4Clk = 01b (2 kHz LFO)
-     * Nilai: (1<<7) | (1<<6) | (1<<4) | (1<<3) | (1<<2) | (1<<0) = 0xDD
-     */
+    /* 8. Mulai Timer 4 (0xDD) & masuk mode Standby + LPCD (0x81) */
     CLRC663_WriteReg(CLRC663_REG_T4CONTROL, 0xDD);
-
-    /* Mulai mode LPCD dengan standby (Bit 7 = Standby):
-     * Standby (0x80) | CMD_LPCD (0x01) = 0x81 */
     CLRC663_WriteReg(CLRC663_REG_COMMAND, 0x81);
 
     s_lpcd_active = true;

@@ -87,7 +87,6 @@ static lv_obj_t * lbl_attend_modes[ATTEND_MODE_MAX] = {0};
 static lv_obj_t * div_summary_line   = NULL;
 static lv_obj_t * lbl_date_title      = NULL;
 static lv_obj_t * lbl_date_val        = NULL;
-static lv_obj_t * lbl_mode_hint       = NULL;
 static lv_obj_t * corner_hint_dot     = NULL;
 
 /* Variable Mode Presensi (Default: MASUK) */
@@ -164,6 +163,10 @@ static lv_obj_t * btn_test_beep       = NULL;
 static lv_obj_t * lbl_t_beep          = NULL;
 static lv_obj_t * btn_reset_stats     = NULL;
 static lv_obj_t * lbl_t_reset         = NULL;
+static lv_obj_t * btn_reset_stm32     = NULL;
+static lv_obj_t * lbl_t_reset_stm32   = NULL;
+static lv_obj_t * btn_reset_esp32     = NULL;
+static lv_obj_t * lbl_t_reset_esp32   = NULL;
 static lv_obj_t * lbl_admin_feedback  = NULL;
 
 /* Card Mode Web Server SoftAP & OTA */
@@ -311,6 +314,8 @@ static void dropdown_timeout_cb(lv_event_t * e);
 static void btn_admin_back_cb(lv_event_t * e);
 static void btn_test_beep_cb(lv_event_t * e);
 static void btn_reset_stats_cb(lv_event_t * e);
+static void btn_reset_stm32_cb(lv_event_t * e);
+static void btn_reset_esp32_cb(lv_event_t * e);
 static void btn_ntp_sync_cb(lv_event_t * e);
 static void btn_save_wifi_cb(lv_event_t * e);
 static void ta_wifi_focus_cb(lv_event_t * e);
@@ -339,6 +344,22 @@ static void btn_diag_all_cb(lv_event_t * e);
 /* ========================================================================== */
 app_settings_t g_app_settings = {0};
 
+uint32_t App_Settings_GetUniqueDeviceId32(void)
+{
+    uint32_t words[3] = { HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2() };
+    const uint8_t *bytes = (const uint8_t *)words;
+    uint32_t hash = 2166136261U; /* FNV-1a 32-bit offset basis */
+    for (size_t i = 0; i < sizeof(words); i++) {
+        hash ^= bytes[i];
+        hash *= 16777619U;       /* FNV-1a 32-bit prime */
+    }
+    /* Pastikan 4 digit hex pertama tidak pernah 0000 */
+    if ((hash & 0xFFFF0000U) == 0U) {
+        hash ^= 0xA53C0000U;
+    }
+    return hash;
+}
+
 void App_Settings_ResetDefaults(app_settings_t *s)
 {
     memset(s, 0, sizeof(app_settings_t));
@@ -351,13 +372,10 @@ void App_Settings_ResetDefaults(app_settings_t *s)
     strncpy(s->wifi_pass, "12345678", sizeof(s->wifi_pass) - 1);
     strncpy(s->server_ip, "0.0.0.0", sizeof(s->server_ip) - 1);
 
-    /* Generate kode & nama device unik berdasarkan 96-bit Hardware Unique ID STM32 */
-    uint32_t uid0 = HAL_GetUIDw0();
-    uint32_t uid1 = HAL_GetUIDw1();
-    uint32_t uid2 = HAL_GetUIDw2();
-    uint16_t dev_id = (uint16_t)((uid0 ^ uid1 ^ uid2) & 0xFFFF);
-    snprintf(s->device_code, sizeof(s->device_code), "GATE-%08X", (unsigned int)dev_id);
-    snprintf(s->device_name, sizeof(s->device_name), "Gate %08X", (unsigned int)dev_id);
+    /* Generate kode & nama device unik 8 digit hex penuh dari FNV-1a 32-bit hash 96-bit STM32 UID */
+    uint32_t dev_id = App_Settings_GetUniqueDeviceId32();
+    snprintf(s->device_code, sizeof(s->device_code), "GATE-%08lX", (unsigned long)dev_id);
+    snprintf(s->device_name, sizeof(s->device_name), "Gate %08lX", (unsigned long)dev_id);
 
     strncpy(s->admin_pin, "1234", sizeof(s->admin_pin) - 1);
     s->sync_mode          = SYNC_MODE_REALTIME;
@@ -410,15 +428,15 @@ bool App_Settings_Load(app_settings_t *out)
         out->antipassback_sec = 60;
     }
 
-    /* Jika device_code masih berupa default lama GATE-001 atau kosong, otomatis perbarui ke UID unik */
-    if (out->device_code[0] == '\0' || strcmp(out->device_code, "GATE-001") == 0) {
-        uint32_t uid0 = HAL_GetUIDw0();
-        uint32_t uid1 = HAL_GetUIDw1();
-        uint32_t uid2 = HAL_GetUIDw2();
-        uint16_t dev_id = (uint16_t)((uid0 ^ uid1 ^ uid2) & 0xFFFF);
-        snprintf(out->device_code, sizeof(out->device_code), "GATE-%04X", (unsigned int)dev_id);
-        if (out->device_name[0] == '\0' || strcmp(out->device_name, "Gate Utama") == 0) {
-            snprintf(out->device_name, sizeof(out->device_name), "Gate %04X", (unsigned int)dev_id);
+    /* Jika device_code masih default lama (GATE-001 / kosong) atau format bug lama GATE-0000xxxx,
+       otomatis perbarui ke 8 digit hex unik penuh berbasis 96-bit STM32 UID */
+    if (out->device_code[0] == '\0' || strcmp(out->device_code, "GATE-001") == 0 ||
+        strncmp(out->device_code, "GATE-0000", 9) == 0) {
+        uint32_t dev_id = App_Settings_GetUniqueDeviceId32();
+        snprintf(out->device_code, sizeof(out->device_code), "GATE-%08lX", (unsigned long)dev_id);
+        if (out->device_name[0] == '\0' || strcmp(out->device_name, "Gate Utama") == 0 ||
+            strncmp(out->device_name, "Gate 0000", 9) == 0) {
+            snprintf(out->device_name, sizeof(out->device_name), "Gate %08lX", (unsigned long)dev_id);
         }
         App_Settings_Save(out);
     }
@@ -851,20 +869,12 @@ static void build_screen_main(void)
 
     /* Jam Digital (dipindahkan dari navbar ke bawah tanggal) */
     lbl_clock_main = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_clock_main, 0, 214);
+    lv_obj_set_pos(lbl_clock_main, 0, 218);
     lv_obj_set_width(lbl_clock_main, 139);
     lv_label_set_text(lbl_clock_main, "00:00:00 WIB");
     lv_obj_set_style_text_align(lbl_clock_main, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(lbl_clock_main, lv_color_hex(COLOR_AMBER_STATUS), 0);
     lv_obj_set_style_text_font(lbl_clock_main, &lv_font_montserrat_16, 0);
-
-    lbl_mode_hint = lv_label_create(card_summary);
-    lv_obj_set_pos(lbl_mode_hint, 0, 238);
-    lv_obj_set_width(lbl_mode_hint, 139);
-    lv_label_set_text(lbl_mode_hint, "(Default: Masuk)");
-    lv_obj_set_style_text_align(lbl_mode_hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(lbl_mode_hint, lv_color_hex(COLOR_DARK_TEXT_MUTED), 0);
-    lv_obj_set_style_text_font(lbl_mode_hint, &lv_font_montserrat_12, 0);
 
     /* Subtle indicator dot di pojok kanan bawah (petunjuk sentuh admin) */
     corner_hint_dot = lv_obj_create(screen_main);
@@ -1280,16 +1290,16 @@ static void build_screen_admin(void)
     lv_dropdown_set_selected(dropdown_antipassback, apb_idx);
     lv_obj_add_event_cb(dropdown_antipassback, dropdown_antipassback_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    /* Panel 3: Aksi Cepat Hardware (Tinggi 114 agar tombol dan feedback leluasa tanpa terpotong) */
+    /* Panel 3: Aksi Cepat Hardware & Soft Reset (Tinggi 158 untuk 2 baris tombol + feedback) */
     card_sistem_act = lv_obj_create(tab_sistem);
-    lv_obj_set_size(card_sistem_act, 456, 114);
+    lv_obj_set_size(card_sistem_act, 456, 158);
     lv_obj_set_style_radius(card_sistem_act, 10, 0);
     lv_obj_set_style_pad_all(card_sistem_act, 10, 0);
     lv_obj_remove_flag(card_sistem_act, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_sec_act_t = lv_label_create(card_sistem_act);
     lv_obj_set_pos(lbl_sec_act_t, 0, 0);
-    lv_label_set_text(lbl_sec_act_t, "3. AKSI PERANGKAT");
+    lv_label_set_text(lbl_sec_act_t, "3. AKSI PERANGKAT & SOFT RESET");
     lv_obj_set_style_text_color(lbl_sec_act_t, lv_color_hex(COLOR_CYAN_TEXT), 0);
     lv_obj_set_style_text_font(lbl_sec_act_t, &lv_font_montserrat_14, 0);
 
@@ -1316,9 +1326,34 @@ static void build_screen_admin(void)
     lv_label_set_text(lbl_t_reset, LV_SYMBOL_TRASH " RESET STAT");
     lv_obj_set_style_text_font(lbl_t_reset, &lv_font_montserrat_14, 0);
 
-    /* Baris 2: Label Feedback Lebar Penuh (Tidak terpotong box) */
+    /* Baris 2: Tombol Soft Reset STM32 & ESP32 untuk mitigasi cepat */
+    btn_reset_stm32 = lv_button_create(card_sistem_act);
+    lv_obj_set_pos(btn_reset_stm32, 0, 70);
+    lv_obj_set_size(btn_reset_stm32, 212, 36);
+    lv_obj_set_style_radius(btn_reset_stm32, 6, 0);
+    lv_obj_set_style_border_width(btn_reset_stm32, 1, 0);
+    lv_obj_add_event_cb(btn_reset_stm32, btn_reset_stm32_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_t_reset_stm32 = lv_label_create(btn_reset_stm32);
+    lv_obj_center(lbl_t_reset_stm32);
+    lv_label_set_text(lbl_t_reset_stm32, LV_SYMBOL_REFRESH " RESET STM32");
+    lv_obj_set_style_text_font(lbl_t_reset_stm32, &lv_font_montserrat_14, 0);
+
+    btn_reset_esp32 = lv_button_create(card_sistem_act);
+    lv_obj_set_pos(btn_reset_esp32, 222, 70);
+    lv_obj_set_size(btn_reset_esp32, 212, 36);
+    lv_obj_set_style_radius(btn_reset_esp32, 6, 0);
+    lv_obj_set_style_border_width(btn_reset_esp32, 1, 0);
+    lv_obj_add_event_cb(btn_reset_esp32, btn_reset_esp32_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_t_reset_esp32 = lv_label_create(btn_reset_esp32);
+    lv_obj_center(lbl_t_reset_esp32);
+    lv_label_set_text(lbl_t_reset_esp32, LV_SYMBOL_POWER " RESET ESP32");
+    lv_obj_set_style_text_font(lbl_t_reset_esp32, &lv_font_montserrat_14, 0);
+
+    /* Baris 3: Label Feedback Lebar Penuh (Tidak terpotong box) */
     lbl_admin_feedback = lv_label_create(card_sistem_act);
-    lv_obj_set_pos(lbl_admin_feedback, 0, 72);
+    lv_obj_set_pos(lbl_admin_feedback, 0, 114);
     lv_obj_set_width(lbl_admin_feedback, 436);
     lv_label_set_long_mode(lbl_admin_feedback, LV_LABEL_LONG_MODE_WRAP);
     lv_label_set_text(lbl_admin_feedback, "Status: Siap");
@@ -2074,6 +2109,33 @@ void GUI_Attendance_ProcessEvent(const ui_event_t *evt)
             lv_obj_set_style_text_color(lbl_sync_feedback, lv_color_hex(COLOR_RED_STATUS), 0);
         }
     }
+    else if (evt->type == UI_EVENT_WIFI_STATUS)
+    {
+        /* Perbarui tampilan INFO DEV & feedback tab JARINGAN secara thread-safe di Task_GUI */
+        GUI_Attendance_UpdateWifiInfo(&g_wifi_info);
+        if (strcmp(evt->extra, "ESP_READY") == 0) {
+            if (lbl_admin_feedback) {
+                lv_label_set_text(lbl_admin_feedback, "Status: Soft Reset ESP32 selesai! ESP32 siap.");
+                lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
+            }
+        }
+        if (lbl_wifi_feedback) {
+            if (evt->status == 1 && g_wifi_connected) {
+                lv_label_set_text_fmt(lbl_wifi_feedback, "Status Wi-Fi: Terhubung (%s)",
+                                      (g_wifi_info.ssid[0] != '\0' && strcmp(g_wifi_info.ssid, "-") != 0) ? g_wifi_info.ssid : "OK");
+                lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_GREEN_STATUS), 0);
+            } else if (strcmp(g_wifi_info.status, "CONNECTING") == 0) {
+                lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Menghubungkan...");
+                lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
+            } else if (strcmp(g_wifi_info.status, "REBOOTING") == 0) {
+                lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: ESP32 Sedang Restart...");
+                lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
+            } else {
+                lv_label_set_text(lbl_wifi_feedback, "Status Wi-Fi: Belum Terhubung");
+                lv_obj_set_style_text_color(lbl_wifi_feedback, lv_color_hex(COLOR_RED_STATUS), 0);
+            }
+        }
+    }
 }
 
 /**
@@ -2523,7 +2585,6 @@ static void apply_theme(bool is_dark)
     update_attend_mode_buttons_ui();
     if (lbl_date_title) lv_obj_set_style_text_color(lbl_date_title, lv_color_hex(c_text_mut), 0);
     if (lbl_date_val) lv_obj_set_style_text_color(lbl_date_val, lv_color_hex(c_text_pri), 0);
-    if (lbl_mode_hint) lv_obj_set_style_text_color(lbl_mode_hint, lv_color_hex(c_text_mut), 0);
 
     /* 2. Layar Password (PIN Screen) */
     if (screen_password) lv_obj_set_style_bg_color(screen_password, lv_color_hex(c_bg), 0);
@@ -2649,6 +2710,16 @@ static void apply_theme(bool is_dark)
         lv_obj_set_style_bg_color(btn_reset_stats, lv_color_hex(c_btn_bg), 0);
         lv_obj_set_style_border_color(btn_reset_stats, lv_color_hex(COLOR_RED_STATUS), 0);
         if (lbl_t_reset) lv_obj_set_style_text_color(lbl_t_reset, lv_color_hex(COLOR_RED_STATUS), 0);
+    }
+    if (btn_reset_stm32) {
+        lv_obj_set_style_bg_color(btn_reset_stm32, lv_color_hex(is_dark ? 0x451A03 : 0xFEF3C7), 0);
+        lv_obj_set_style_border_color(btn_reset_stm32, lv_color_hex(COLOR_AMBER_STATUS), 0);
+        if (lbl_t_reset_stm32) lv_obj_set_style_text_color(lbl_t_reset_stm32, lv_color_hex(is_dark ? COLOR_AMBER_STATUS : 0xB45309), 0);
+    }
+    if (btn_reset_esp32) {
+        lv_obj_set_style_bg_color(btn_reset_esp32, lv_color_hex(is_dark ? 0x450A0A : 0xFEE2E2), 0);
+        lv_obj_set_style_border_color(btn_reset_esp32, lv_color_hex(COLOR_RED_STATUS), 0);
+        if (lbl_t_reset_esp32) lv_obj_set_style_text_color(lbl_t_reset_esp32, lv_color_hex(is_dark ? COLOR_RED_STATUS : 0xB91C1C), 0);
     }
 
     if (lbl_rotation_t) lv_obj_set_style_text_color(lbl_rotation_t, lv_color_hex(c_text_pri), 0);
@@ -3539,6 +3610,29 @@ static void btn_reset_stats_cb(lv_event_t * e)
     }
 }
 
+static void btn_reset_stm32_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    if (lbl_admin_feedback) {
+        lv_label_set_text(lbl_admin_feedback, "Status: Melakukan Soft Reset STM32...");
+        lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
+    }
+    Hardware_SoftResetSTM32();
+}
+
+static void btn_reset_esp32_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    GUI_Attendance_NotifyActivity();
+    if (lbl_admin_feedback) {
+        lv_label_set_text(lbl_admin_feedback, "Status: Perintah Soft Reset dikirim ke ESP32...");
+        lv_obj_set_style_text_color(lbl_admin_feedback, lv_color_hex(COLOR_AMBER_STATUS), 0);
+    }
+    Hardware_SoftResetESP32();
+    GUI_Attendance_UpdateWifiInfo(&g_wifi_info);
+}
+
 static void btn_ntp_sync_cb(lv_event_t * e)
 {
     LV_UNUSED(e);
@@ -3908,33 +4002,59 @@ void GUI_Attendance_UpdateWifiInfo(const wifi_info_t *info)
 {
     if (info == NULL) return;
 
+    bool is_conn = (strcmp(info->status, "CONNECTED") == 0) && g_wifi_connected;
+    bool is_ap   = (strcmp(info->status, "AP_MODE") == 0);
+
     if (lbl_info_wifi_proto) {
-        if (info->is_wifi6) {
-            lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Wi-Fi 6 (802.11ax) [OFDMA High-Efficiency]");
-            lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_GREEN_STATUS), 0);
-        } else if (info->protocol[0] != '\0') {
-            lv_label_set_text_fmt(lbl_info_wifi_proto, "- Tipe: %s", info->protocol);
-            lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_CYAN_TEXT), 0);
+        if (is_conn) {
+            if (info->is_wifi6) {
+                lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Wi-Fi 6 (802.11ax) [OFDMA High-Efficiency]");
+                lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_GREEN_STATUS), 0);
+            } else if (info->protocol[0] != '\0' && strcmp(info->protocol, "-") != 0) {
+                lv_label_set_text_fmt(lbl_info_wifi_proto, "- Tipe: %s", info->protocol);
+                lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_CYAN_TEXT), 0);
+            } else {
+                lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Wi-Fi Terhubung");
+                lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_CYAN_TEXT), 0);
+            }
+        } else if (is_ap) {
+            lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Mode SoftAP (Web Dashboard / OTA)");
+            lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_AMBER_STATUS), 0);
         } else {
-            lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Memeriksa modul Wi-Fi ESP32-C6...");
+            lv_label_set_text(lbl_info_wifi_proto, "- Tipe: Belum Terhubung (ESP32-C6)");
             lv_obj_set_style_text_color(lbl_info_wifi_proto, lv_color_hex(COLOR_AMBER_STATUS), 0);
         }
     }
 
     if (lbl_info_wifi_status) {
-        if (strcmp(info->status, "CONNECTED") == 0) {
-            lv_label_set_text_fmt(lbl_info_wifi_status, "- Status: CONNECTED (RSSI: %s)", info->rssi);
+        if (is_conn) {
+            lv_label_set_text_fmt(lbl_info_wifi_status, "- Status: TERHUBUNG (RSSI: %s)", info->rssi);
             lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(COLOR_GREEN_STATUS), 0);
-        } else {
-            lv_label_set_text_fmt(lbl_info_wifi_status, "- Status: %s", (info->status[0] != '\0') ? info->status : "DISCONNECTED");
+        } else if (is_ap) {
+            lv_label_set_text(lbl_info_wifi_status, "- Status: SOFTAP AKTIF (192.168.4.1)");
             lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(COLOR_AMBER_STATUS), 0);
+        } else if (strcmp(info->status, "CONNECTING") == 0) {
+            lv_label_set_text(lbl_info_wifi_status, "- Status: MENGHUBUNGKAN...");
+            lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(COLOR_AMBER_STATUS), 0);
+        } else if (strcmp(info->status, "REBOOTING") == 0) {
+            lv_label_set_text(lbl_info_wifi_status, "- Status: ESP32 SEDANG RESTART...");
+            lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(COLOR_AMBER_STATUS), 0);
+        } else {
+            lv_label_set_text(lbl_info_wifi_status, "- Status: TIDAK TERHUBUNG");
+            lv_obj_set_style_text_color(lbl_info_wifi_status, lv_color_hex(COLOR_RED_STATUS), 0);
         }
     }
 
     if (lbl_info_wifi_ssid) {
-        lv_label_set_text_fmt(lbl_info_wifi_ssid, "- SSID: %s | IP: %s",
-                              (info->ssid[0] != '\0') ? info->ssid : "-",
-                              (info->ip[0] != '\0') ? info->ip : "-");
+        if (is_conn) {
+            lv_label_set_text_fmt(lbl_info_wifi_ssid, "- SSID: %s | IP: %s",
+                                  (info->ssid[0] != '\0') ? info->ssid : "-",
+                                  (info->ip[0] != '\0') ? info->ip : "-");
+        } else if (is_ap) {
+            lv_label_set_text(lbl_info_wifi_ssid, "- SSID: SoftAP Admin | IP: 192.168.4.1");
+        } else {
+            lv_label_set_text(lbl_info_wifi_ssid, "- SSID: - | IP: 0.0.0.0");
+        }
     }
 
     if (lbl_info_wifi_ip_mac) {

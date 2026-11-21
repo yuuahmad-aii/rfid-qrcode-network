@@ -164,13 +164,15 @@ volatile bool g_sd_mounted = false;
 volatile bool g_wifi_connected = false;
 volatile uint32_t g_attendance_total = 0;
 volatile bool g_bulk_sync_requested = false;
+volatile bool g_stm32_soft_reset_requested = false;
+volatile uint32_t g_stm32_reset_tick = 0;
 
 wifi_info_t g_wifi_info = {
     .status = "DISCONNECTED",
     .ssid = "-",
     .ip = "0.0.0.0",
     .rssi = "- dBm",
-    .protocol = "Wi-Fi 6 (802.11ax)",
+    .protocol = "-",
     .mac = "-",
     .is_wifi6 = false
 };
@@ -405,12 +407,15 @@ void SystemClock_Config(void) {
    */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  HAL_PWR_EnableBkUpAccess();
 
   /** Initializes the RCC Oscillators according to the specified parameters
    * in the RCC_OscInitTypeDef structure.
    */
+  bool lse_already_ready = (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) != RESET);
   RCC_OscInitStruct.OscillatorType =
-      RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_HSE | RCC_OSCILLATORTYPE_LSE;
+      RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_HSE |
+      (lse_already_ready ? 0U : RCC_OSCILLATORTYPE_LSE);
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
@@ -421,7 +426,11 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 7;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-    Error_Handler();
+    /* Fallback aman setelah soft reset jika LSE timeout: tetap lanjut dengan HSE + LSI */
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_HSE;
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+      Error_Handler();
+    }
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
@@ -878,9 +887,9 @@ static void MX_GPIO_Init(void) {
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(SDIO_DET_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SPI3_IRQ_Pin */
+  /*Configure GPIO pin : SPI3_IRQ_Pin (Active HIGH / Rising Edge dari CLRC663 LPCD saat IRQ0EN=0x00) */
   GPIO_InitStruct.Pin = SPI3_IRQ_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(SPI3_IRQ_GPIO_Port, &GPIO_InitStruct);
 
@@ -902,14 +911,12 @@ static void MX_GPIO_Init(void) {
  */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  /* RFID IRQ: PA15 (SPI3_IRQ) */
+  /* RFID IRQ: PA15 (SPI3_IRQ) - Hanya bangunkan Task_RFID untuk verifikasi
+     LPCD terlebih dahulu sebelum membangunkan layar agar false trigger/noise
+     tidak membangunkan layar */
   if (GPIO_Pin == SPI3_IRQ_Pin) {
     if (Task_RFIDHandle != NULL) {
       vTaskNotifyGiveFromISR((TaskHandle_t)Task_RFIDHandle,
-                             &xHigherPriorityTaskWoken);
-    }
-    if (Task_GUIHandle != NULL) {
-      vTaskNotifyGiveFromISR((TaskHandle_t)Task_GUIHandle,
                              &xHigherPriorityTaskWoken);
     }
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -1895,6 +1902,37 @@ void Buzzer_TestDiagnostic(void) {
 }
 
 /**
+ * @brief  Jadwalkan Soft Reset STM32 secara aman (dieksekusi di luar callback LVGL pada StartGuiTask)
+ */
+void Hardware_SoftResetSTM32(void) {
+  g_stm32_reset_tick = HAL_GetTick();
+  g_stm32_soft_reset_requested = true;
+}
+
+/**
+ * @brief  Soft Reset ESP32-C6 melalui perintah UART CMD:SOFT_RESET
+ */
+void Hardware_SoftResetESP32(void) {
+  g_wifi_connected = false;
+  strncpy(g_wifi_info.status, "REBOOTING", sizeof(g_wifi_info.status) - 1);
+  g_wifi_info.status[sizeof(g_wifi_info.status) - 1] = '\0';
+  strncpy(g_wifi_info.ssid, "-", sizeof(g_wifi_info.ssid) - 1);
+  strncpy(g_wifi_info.ip, "0.0.0.0", sizeof(g_wifi_info.ip) - 1);
+  strncpy(g_wifi_info.rssi, "- dBm", sizeof(g_wifi_info.rssi) - 1);
+  strncpy(g_wifi_info.protocol, "-", sizeof(g_wifi_info.protocol) - 1);
+  g_wifi_info.is_wifi6 = false;
+
+  esp_tx_item_t item = {0};
+  snprintf(item.payload, sizeof(item.payload), "CMD:SOFT_RESET\n");
+  osMessageQueuePut(espTxQueueHandle, &item, 0, 100);
+
+  ui_event_t ui_evt = {0};
+  ui_evt.type = UI_EVENT_WIFI_STATUS;
+  ui_evt.status = 0;
+  osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+}
+
+/**
  * @brief  LVGL Touch input callback reading from XPT2046 with mutex protection
  */
 static void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -1946,24 +1984,32 @@ void Power_EnterStopMode(void) {
   /* 1. Feed IWDG sebelum tidur */
   HAL_IWDG_Refresh(&hiwdg);
 
-  /* 2. Suspend SysTick agar interrupt SysTick 1ms tidak membangunkan MCU */
+  /* 2. Suspend scheduler FreeRTOS sementara agar setelah bangun dari STOP mode,
+        clock 168 MHz dan TIM6 (HAL_GetTick/HAL_Delay) PASTI sudah pulih sebelum
+        task berprioritas tinggi (Task_RFID) mulai berjalan! */
+  vTaskSuspendAll();
+
+  /* 3. Suspend TIM6 HAL tick agar interrupt tick tidak membangunkan MCU */
   HAL_SuspendTick();
 
-  /* 3. Masuk ke STOP Mode dengan Regulator Low Power.
+  /* 4. Masuk ke STOP Mode dengan Regulator Low Power.
      Konsumsi arus STM32F405 turun dari ~50mA menjadi ~300uA.
      MCU akan bangun jika ada sinyal EXTI (PA15 RFID LPCD, PC6 Touch, atau RTC
      1s). */
   HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
-  /* 4. MCU Bangun: Clock secara otomatis beralih ke HSI 16MHz.
+  /* 5. MCU Bangun: Clock secara otomatis beralih ke HSI 16MHz.
      Segera kembalikan clock ke 168MHz (HSE + PLL). */
   SystemClock_RestoreFromStop();
 
-  /* 5. Resume SysTick */
+  /* 6. Resume TIM6 HAL tick */
   HAL_ResumeTick();
 
-  /* 6. Segarkan IWDG segera setelah bangun */
+  /* 7. Segarkan IWDG segera setelah bangun */
   HAL_IWDG_Refresh(&hiwdg);
+
+  /* 8. Resume scheduler FreeRTOS (sekarang Task_RFID aman berjalan dengan 168MHz & TIM6 aktif) */
+  xTaskResumeAll();
 }
 
 /* Buffer Riwayat Anti-Passback Cerdas (Cegah Double Tap) */
@@ -1994,6 +2040,17 @@ void StartRfidTask(void *argument) {
   }
   osMutexRelease(spi2MutexHandle);
 
+  /* Tracking adaptive LPCD:
+     - Saat masuk sleep, re-kalibrasi baseline I/Q 4-sample sesuai suhu saat ini.
+     - Setiap interrupt PA15 SELALU membangunkan layar (tidak menolak kartu/logam).
+     - Jika terjadi wakeup instan (<1s setelah sleep) lalu kembali sleep tanpa kartu
+       terbaca, naikkan backoff sementara (+1, maks +2) pada sesi sleep berikutnya. */
+  uint8_t lpcd_auto_backoff = 0;
+  uint16_t lpcd_quiet_ticks = 0;
+  bool lpcd_instant_wake = false;
+  bool lpcd_card_read_since_wake = false;
+  bool was_asleep = false;
+
   /* Infinite loop */
   for (;;) {
     Watchdog_CheckIn(WDT_TASK_RFID);
@@ -2002,16 +2059,49 @@ void StartRfidTask(void *argument) {
     bool is_asleep = GUI_Attendance_IsSleeping();
 
     if (is_asleep && g_clrc663_ready) {
+      uint16_t interval = (g_app_settings.lpcd_interval_ms >= 100 && g_app_settings.lpcd_interval_ms <= 2000)
+                              ? g_app_settings.lpcd_interval_ms
+                              : 300;
+
       /* Saat layar sleep: masukkan CLRC663 ke mode LPCD (Low-Power Card
          Detection). Antena pemancar RF 13.56 MHz dimatikan (arus turun dari
          ~120mA ke ~30uA). Chip bangun setiap 300 ms secara periodik. Jika ada
-         kartu mendekat, pin IRQ (PA15) akan menarik interrupt EXTI untuk
+         kartu/objek mendekat, pin IRQ (PA15) akan menarik interrupt EXTI untuk
          membangunkan task ini. */
       if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
         if (!CLRC663_LPCD_IsActive()) {
-          uint8_t delta = (g_app_settings.lpcd_delta >= 1 && g_app_settings.lpcd_delta <= 10) ? g_app_settings.lpcd_delta : 3;
-          uint16_t interval = (g_app_settings.lpcd_interval_ms >= 100 && g_app_settings.lpcd_interval_ms <= 2000) ? g_app_settings.lpcd_interval_ms : 300;
-          CLRC663_LPCD_Start(delta, interval);
+          if (!was_asleep) {
+            /* Jika sesi bangun sebelumnya dipicu wakeup instan (<1s) dan tidak
+               ada kartu yang terbaca, naikkan backoff sementara agar board sensitif
+               bisa tidur tenang; sebaliknya reset backoff ke 0 */
+            if (lpcd_instant_wake && !lpcd_card_read_since_wake) {
+              if (lpcd_auto_backoff < 2) {
+                lpcd_auto_backoff++;
+              }
+            } else {
+              lpcd_auto_backoff = 0;
+            }
+            lpcd_instant_wake = false;
+            lpcd_card_read_since_wake = false;
+            lpcd_quiet_ticks = 0;
+
+            /* Re-kalibrasi baseline I/Q dalam kondisi suhu & lingkungan saat ini */
+            CLRC663_AntennaOff();
+            osDelay(10);
+            CLRC663_LPCD_Calibrate(NULL, NULL);
+          }
+
+          uint8_t base_delta = (g_app_settings.lpcd_delta >= 1 && g_app_settings.lpcd_delta <= 10)
+                                   ? g_app_settings.lpcd_delta
+                                   : 3;
+          uint8_t eff_delta = base_delta + lpcd_auto_backoff;
+          if (eff_delta > 10) eff_delta = 10;
+          /* Bersihkan pending EXTI & stale notification SEBELUM mengaktifkan LPCD
+             agar interrupt LPCD yang baru tidak pernah dibuang (mencegah PA15 stuck HIGH!) */
+          __HAL_GPIO_EXTI_CLEAR_IT(SPI3_IRQ_Pin);
+          ulTaskNotifyTake(pdTRUE, 0);
+          CLRC663_LPCD_Start(eff_delta, interval);
+          was_asleep = true;
         }
         osMutexRelease(spi2MutexHandle);
       }
@@ -2019,22 +2109,34 @@ void StartRfidTask(void *argument) {
       /* Tidur hemat daya menunggu Task Notification dari PA15 EXTI (kartu
          menempel) atau timeout 1000 ms agar Watchdog tetap ter-feed */
       uint32_t woken = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+      /* Failsafe: cek level fisik pin PA15 jika edge sempat terlewat agar LPCD tidak pernah stuck */
+      if (woken == 0 && HAL_GPIO_ReadPin(SPI3_IRQ_GPIO_Port, SPI3_IRQ_Pin) == GPIO_PIN_SET) {
+        woken = 1;
+      }
       if (woken > 0) {
-        /* Terdeteksi interupsi dari pin PA15 (kartu mendekat saat LPCD) */
-        if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
+        /* Terdeteksi interupsi dari pin PA15: langsung hentikan LPCD & bangunkan layar */
+        if (osMutexAcquire(spi2MutexHandle, 100) == osOK) {
           CLRC663_LPCD_Stop();
           osMutexRelease(spi2MutexHandle);
         }
-        /* Bangunkan layar segera */
+        lpcd_instant_wake = (lpcd_quiet_ticks == 0);
+        lpcd_card_read_since_wake = false;
+        was_asleep = false;
         GUI_Attendance_Wakeup();
-        /* Beri waktu 15ms agar transponder pasif kartu RFID ter-charge oleh
-         * medan RF */
+        if (Task_GUIHandle != NULL) {
+          xTaskNotifyGive((TaskHandle_t)Task_GUIHandle);
+        }
+        /* Beri waktu 15ms agar transponder pasif kartu RFID ter-charge oleh medan RF */
         osDelay(15);
       } else {
-        /* Timeout 1s: loop kembali untuk check-in watchdog */
+        /* Timeout 1s tanpa trigger: device stabil di mode sleep */
+        if (lpcd_quiet_ticks < 60000) {
+          lpcd_quiet_ticks++;
+        }
         continue;
       }
     } else {
+      was_asleep = false;
       /* Saat layar aktif / baru bangun: pastikan antena menyala dan mode LPCD
        * dimatikan */
       if (osMutexAcquire(spi2MutexHandle, 50) == osOK) {
@@ -2060,6 +2162,8 @@ void StartRfidTask(void *argument) {
       if (g_clrc663_ready && !CLRC663_LPCD_IsActive()) {
         CLRC663_Card_t card;
         if (CLRC663_ReadCard(&card)) {
+          lpcd_card_read_since_wake = true;
+          lpcd_auto_backoff = 0;
           /* Debounce kartu yang sama dalam durasi 1500 ms */
           uint32_t now = HAL_GetTick();
           bool is_duplicate = false;
@@ -2261,12 +2365,9 @@ void StartRfidTask(void *argument) {
                           sizeof(dev_code_buf) - 1);
                   dev_code_buf[sizeof(dev_code_buf) - 1] = '\0';
                 } else {
-                  uint16_t dev_id =
-                      (uint16_t)((HAL_GetUIDw0() ^ HAL_GetUIDw1() ^
-                                  HAL_GetUIDw2()) &
-                                 0xFFFF);
-                  snprintf(dev_code_buf, sizeof(dev_code_buf), "GATE-%04X",
-                           (unsigned int)dev_id);
+                  uint32_t dev_id = App_Settings_GetUniqueDeviceId32();
+                  snprintf(dev_code_buf, sizeof(dev_code_buf), "GATE-%08lX",
+                           (unsigned long)dev_id);
                 }
 
                 char txn_uid[96];
@@ -2358,6 +2459,34 @@ void StartGuiTask(void *argument) {
 
     /* 2. Periksa screen sleep timer */
     GUI_Attendance_CheckSleep();
+
+    /* 2b. Eksekusi Soft Reset STM32 di luar callback LVGL agar frame feedback sempat ter-render bersih */
+    if (g_stm32_soft_reset_requested && (HAL_GetTick() - g_stm32_reset_tick >= 200U)) {
+      g_stm32_soft_reset_requested = false;
+      Watchdog_KickDirect();
+      /* Bunyikan beep singkat & matikan backlight sebagai tanda fisik reboot dimulai */
+      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_SET);
+      osDelay(40);
+      HAL_GPIO_WritePin(OUTPUT_BUZZER_GPIO_Port, OUTPUT_BUZZER_Pin, GPIO_PIN_RESET);
+      __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 0);
+      /* Unmount MicroSD secara aman sebelum reset */
+      if (osMutexAcquire(sdioFatFsMutexHandle, 200) == osOK) {
+        if (g_sd_mounted) {
+          f_mount(NULL, (TCHAR const *)SDPath, 0);
+          BSP_SD_DeInit();
+          g_sd_mounted = false;
+        }
+        osMutexRelease(sdioFatFsMutexHandle);
+      }
+      /* Minta ESP32 melakukan Hardware Reset STM32 via pin NRST (Open-Drain) */
+      const char *rst_cmd = "CMD:RESET_STM32\n";
+      HAL_UART_Transmit(&huart1, (uint8_t *)rst_cmd, strlen(rst_cmd), 100);
+      osDelay(300);
+      /* Fallback: jika ESP32 tidak terhubung/tidak merespons, eksekusi software reset langsung */
+      __disable_irq();
+      __DSB();
+      NVIC_SystemReset();
+    }
 
     /* 3. Manajemen daya & refresh GUI */
     if (GUI_Attendance_IsSleeping()) {
@@ -2843,13 +2972,52 @@ void StartEsp32Task(void *argument) {
       } else if (strncmp(uart1_rx_buf, "WIFI:FAIL", 9) == 0) {
         g_wifi_connected = false;
         strncpy(g_wifi_info.status, "DISCONNECTED", sizeof(g_wifi_info.status) - 1);
+        g_wifi_info.status[sizeof(g_wifi_info.status) - 1] = '\0';
+        strncpy(g_wifi_info.ssid, "-", sizeof(g_wifi_info.ssid) - 1);
+        strncpy(g_wifi_info.ip, "0.0.0.0", sizeof(g_wifi_info.ip) - 1);
+        strncpy(g_wifi_info.rssi, "- dBm", sizeof(g_wifi_info.rssi) - 1);
+        strncpy(g_wifi_info.protocol, "-", sizeof(g_wifi_info.protocol) - 1);
+        g_wifi_info.is_wifi6 = false;
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 0;
         osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
-      } else if (strncmp(uart1_rx_buf, "WIFI_SAVED", 10) == 0) {
-        g_wifi_connected = false;
+      } else if (strncmp(uart1_rx_buf, "ESP_READY", 9) == 0) {
+        /* ESP32 baru selesai booting / soft reset: kirim ulang identitas & minta status Wi-Fi */
+        esp_tx_item_t dev_cmd = {0};
+        snprintf(dev_cmd.payload, sizeof(dev_cmd.payload), "CMD:SET_DEVICE:%s|%s\n",
+                 g_app_settings.device_code, g_app_settings.device_name);
+        osMessageQueuePut(espTxQueueHandle, &dev_cmd, 0, 20);
+
+        esp_tx_item_t sync_cmd = {0};
+        snprintf(sync_cmd.payload, sizeof(sync_cmd.payload), "CMD:SET_SYNC_MODE:%d\n",
+                 (int)g_app_settings.sync_mode);
+        osMessageQueuePut(espTxQueueHandle, &sync_cmd, 0, 20);
+
+        esp_tx_item_t wifi_cmd = {0};
+        snprintf(wifi_cmd.payload, sizeof(wifi_cmd.payload), "CMD:GET_WIFI_STATUS\n");
+        osMessageQueuePut(espTxQueueHandle, &wifi_cmd, 0, 20);
+
         strncpy(g_wifi_info.status, "CONNECTING", sizeof(g_wifi_info.status) - 1);
+        g_wifi_info.status[sizeof(g_wifi_info.status) - 1] = '\0';
+
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_WIFI_STATUS;
+        ui_evt.status = 0;
+        strncpy(ui_evt.extra, "ESP_READY", sizeof(ui_evt.extra) - 1);
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
+      } else if (strncmp(uart1_rx_buf, "WIFI_SAVED", 10) == 0 ||
+                 strncmp(uart1_rx_buf, "ESP_REBOOTING", 13) == 0) {
+        g_wifi_connected = false;
+        strncpy(g_wifi_info.status,
+                (strncmp(uart1_rx_buf, "ESP_REBOOTING", 13) == 0) ? "REBOOTING" : "CONNECTING",
+                sizeof(g_wifi_info.status) - 1);
+        g_wifi_info.status[sizeof(g_wifi_info.status) - 1] = '\0';
+        strncpy(g_wifi_info.ssid, "-", sizeof(g_wifi_info.ssid) - 1);
+        strncpy(g_wifi_info.ip, "0.0.0.0", sizeof(g_wifi_info.ip) - 1);
+        strncpy(g_wifi_info.rssi, "- dBm", sizeof(g_wifi_info.rssi) - 1);
+        strncpy(g_wifi_info.protocol, "-", sizeof(g_wifi_info.protocol) - 1);
+        g_wifi_info.is_wifi6 = false;
         ui_event_t ui_evt = {0};
         ui_evt.type = UI_EVENT_WIFI_STATUS;
         ui_evt.status = 0;
@@ -2867,17 +3035,41 @@ void StartEsp32Task(void *argument) {
         char *proto = strtok(NULL, "|");
         char *mac   = strtok(NULL, "|");
 
-        if (st) strncpy(g_wifi_info.status, st, sizeof(g_wifi_info.status) - 1);
-        if (ssid) strncpy(g_wifi_info.ssid, ssid, sizeof(g_wifi_info.ssid) - 1);
-        if (ip) strncpy(g_wifi_info.ip, ip, sizeof(g_wifi_info.ip) - 1);
-        if (rssi) strncpy(g_wifi_info.rssi, rssi, sizeof(g_wifi_info.rssi) - 1);
-        if (proto) {
-          strncpy(g_wifi_info.protocol, proto, sizeof(g_wifi_info.protocol) - 1);
-          g_wifi_info.is_wifi6 = (strstr(proto, "Wi-Fi 6") != NULL || strstr(proto, "11ax") != NULL);
-        }
-        if (mac) strncpy(g_wifi_info.mac, mac, sizeof(g_wifi_info.mac) - 1);
+        bool info_connected = (st != NULL && strcmp(st, "CONNECTED") == 0);
+        g_wifi_connected = info_connected;
 
-        GUI_Attendance_UpdateWifiInfo(&g_wifi_info);
+        if (st) {
+          strncpy(g_wifi_info.status, st, sizeof(g_wifi_info.status) - 1);
+          g_wifi_info.status[sizeof(g_wifi_info.status) - 1] = '\0';
+        }
+        if (ssid) {
+          strncpy(g_wifi_info.ssid, info_connected ? ssid : "-", sizeof(g_wifi_info.ssid) - 1);
+          g_wifi_info.ssid[sizeof(g_wifi_info.ssid) - 1] = '\0';
+        }
+        if (ip) {
+          strncpy(g_wifi_info.ip, info_connected ? ip : (strcmp(g_wifi_info.status, "AP_MODE") == 0 ? ip : "0.0.0.0"), sizeof(g_wifi_info.ip) - 1);
+          g_wifi_info.ip[sizeof(g_wifi_info.ip) - 1] = '\0';
+        }
+        if (rssi) {
+          strncpy(g_wifi_info.rssi, info_connected ? rssi : "- dBm", sizeof(g_wifi_info.rssi) - 1);
+          g_wifi_info.rssi[sizeof(g_wifi_info.rssi) - 1] = '\0';
+        }
+        if (proto) {
+          strncpy(g_wifi_info.protocol, info_connected ? proto : (strcmp(g_wifi_info.status, "AP_MODE") == 0 ? proto : "-"), sizeof(g_wifi_info.protocol) - 1);
+          g_wifi_info.protocol[sizeof(g_wifi_info.protocol) - 1] = '\0';
+          g_wifi_info.is_wifi6 = info_connected && (strstr(proto, "Wi-Fi 6") != NULL || strstr(proto, "11ax") != NULL);
+        } else {
+          g_wifi_info.is_wifi6 = false;
+        }
+        if (mac) {
+          strncpy(g_wifi_info.mac, mac, sizeof(g_wifi_info.mac) - 1);
+          g_wifi_info.mac[sizeof(g_wifi_info.mac) - 1] = '\0';
+        }
+
+        ui_event_t ui_evt = {0};
+        ui_evt.type = UI_EVENT_WIFI_STATUS;
+        ui_evt.status = info_connected ? 1 : 0;
+        osMessageQueuePut(uiEventQueueHandle, &ui_evt, 0, 10);
       } else if (strncmp(uart1_rx_buf, "AP_ACTIVE:", 10) == 0) {
         /* Format: AP_ACTIVE:<SSID>|<PASS>|<IP> */
         char *data = uart1_rx_buf + 10;
@@ -3127,11 +3319,9 @@ void StartStorageTask(void *argument) {
                 sizeof(dev_code_buf) - 1);
         dev_code_buf[sizeof(dev_code_buf) - 1] = '\0';
       } else {
-        uint16_t dev_id =
-            (uint16_t)((HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2()) &
-                       0xFFFF);
-        snprintf(dev_code_buf, sizeof(dev_code_buf), "GATE-%04X",
-                 (unsigned int)dev_id);
+        uint32_t dev_id = App_Settings_GetUniqueDeviceId32();
+        snprintf(dev_code_buf, sizeof(dev_code_buf), "GATE-%08lX",
+                 (unsigned long)dev_id);
       }
       snprintf(txn_uid, sizeof(txn_uid), "%.24s_%02d%02d%02d%02d%02d%02d_%.24s",
                dev_code_buf, sd_item.year, sd_item.month, sd_item.date,

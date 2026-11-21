@@ -178,6 +178,11 @@ void App_Settings_Init(void);
 bool App_Settings_Load(app_settings_t *out_settings);
 bool App_Settings_Save(const app_settings_t *in_settings);
 void App_Settings_ResetDefaults(app_settings_t *settings);
+uint32_t App_Settings_GetUniqueDeviceId32(void);
+
+/* Soft Reset Helpers (STM32 & ESP32) */
+void Hardware_SoftResetSTM32(void);
+void Hardware_SoftResetESP32(void);
 
 /* Screen Rotation & OTA Modal Controls */
 void GUI_Attendance_SetScreenRotation(uint8_t rot);

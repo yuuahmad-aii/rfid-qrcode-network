@@ -204,16 +204,20 @@ static void send_wifi_status_info(void) {
   uint8_t mac[6] = {0};
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
-  char proto_str[32] = "Wi-Fi 4 (802.11n)";
+  char proto_str[32] = "-";
   char ssid_str[34] = "-";
   char ip_str[16] = "0.0.0.0";
-  int rssi = 0;
+  char rssi_str[16] = "- dBm";
   bool is_connected = false;
 
-  if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+  EventBits_t bits = s_wifi_event_group ? xEventGroupGetBits(s_wifi_event_group) : 0;
+  bool has_ip = ((bits & WIFI_CONNECTED_BIT) != 0);
+
+  if (!s_is_ap_mode && has_ip && esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
     is_connected = true;
     strncpy(ssid_str, (char *)ap_info.ssid, sizeof(ssid_str) - 1);
-    rssi = ap_info.rssi;
+    ssid_str[sizeof(ssid_str) - 1] = '\0';
+    snprintf(rssi_str, sizeof(rssi_str), "%d dBm", ap_info.rssi);
     if (ap_info.phy_11ax) {
       strncpy(proto_str, "Wi-Fi 6 (802.11ax)", sizeof(proto_str) - 1);
     } else if (ap_info.phy_11n) {
@@ -222,11 +226,17 @@ static void send_wifi_status_info(void) {
       strncpy(proto_str, "802.11g", sizeof(proto_str) - 1);
     } else if (ap_info.phy_11b) {
       strncpy(proto_str, "802.11b", sizeof(proto_str) - 1);
+    } else {
+      strncpy(proto_str, "802.11", sizeof(proto_str) - 1);
     }
-  }
+    proto_str[sizeof(proto_str) - 1] = '\0';
 
-  if (s_sta_netif && esp_netif_get_ip_info(s_sta_netif, &ip_info) == ESP_OK) {
-    esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
+    if (s_sta_netif && esp_netif_get_ip_info(s_sta_netif, &ip_info) == ESP_OK) {
+      esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
+    }
+  } else if (s_is_ap_mode) {
+    strncpy(proto_str, "Mode SoftAP (OTA)", sizeof(proto_str) - 1);
+    strncpy(ip_str, "192.168.4.1", sizeof(ip_str) - 1);
   }
 
   char mac_str[18];
@@ -234,12 +244,15 @@ static void send_wifi_status_info(void) {
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
   char msg[160];
-  snprintf(msg, sizeof(msg), "WIFI_INFO:%s|%s|%s|%d dBm|%s|%s\n",
-           is_connected ? "CONNECTED" : "DISCONNECTED",
-           ssid_str, ip_str, rssi, proto_str, mac_str);
+  snprintf(msg, sizeof(msg), "WIFI_INFO:%s|%s|%s|%s|%s|%s\n",
+           is_connected ? "CONNECTED" : (s_is_ap_mode ? "AP_MODE" : "DISCONNECTED"),
+           ssid_str, ip_str, rssi_str, proto_str, mac_str);
   strncpy(s_wifi_ssid_buf, ssid_str, sizeof(s_wifi_ssid_buf) - 1);
+  s_wifi_ssid_buf[sizeof(s_wifi_ssid_buf) - 1] = '\0';
   strncpy(s_wifi_ip_buf, ip_str, sizeof(s_wifi_ip_buf) - 1);
-  snprintf(s_wifi_rssi_buf, sizeof(s_wifi_rssi_buf), "%d dBm", rssi);
+  s_wifi_ip_buf[sizeof(s_wifi_ip_buf) - 1] = '\0';
+  strncpy(s_wifi_rssi_buf, rssi_str, sizeof(s_wifi_rssi_buf) - 1);
+  s_wifi_rssi_buf[sizeof(s_wifi_rssi_buf) - 1] = '\0';
   uart_send_and_log(msg);
 }
 
@@ -251,8 +264,14 @@ static void event_handler(void *arg, esp_event_base_t event_base,
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     set_led_color(16, 0, 0); // Red
+    if (s_wifi_event_group) {
+      xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    strncpy(s_wifi_ssid_buf, "-", sizeof(s_wifi_ssid_buf) - 1);
+    strncpy(s_wifi_ip_buf, "0.0.0.0", sizeof(s_wifi_ip_buf) - 1);
+    strncpy(s_wifi_rssi_buf, "- dBm", sizeof(s_wifi_rssi_buf) - 1);
     s_wifi_retry_count++;
-    if (s_wifi_connected_prev) {
+    if (s_wifi_connected_prev || s_wifi_retry_count == 1) {
       s_wifi_connected_prev = false;
       uart_send_and_log("WIFI:FAIL\n");
       vTaskDelay(pdMS_TO_TICKS(50));
@@ -335,13 +354,24 @@ void wifi_init_sta(void) {
       nvs_close(my_handle);
   }
 
-  /* Jika dev_code masih default GATE-001 atau kosong, gunakan default unik berdasarkan MAC address Wi-Fi */
-  if (strlen(s_device_code) == 0 || strcmp(s_device_code, "GATE-001") == 0) {
+  /* Jika dev_code masih default GATE-001, kosong, atau format lama GATE-0000xxxx,
+     gunakan 8 digit hex unik penuh dari FNV-1a 32-bit hash MAC address Wi-Fi */
+  if (strlen(s_device_code) == 0 || strcmp(s_device_code, "GATE-001") == 0 ||
+      strncmp(s_device_code, "GATE-0000", 9) == 0) {
       uint8_t mac[6] = {0};
       if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
-          snprintf(s_device_code, sizeof(s_device_code), "GATE-%02X%02X", mac[4], mac[5]);
-          if (strlen(s_device_name) == 0 || strcmp(s_device_name, "Gate Utama") == 0) {
-              snprintf(s_device_name, sizeof(s_device_name), "Gate %02X%02X", mac[4], mac[5]);
+          uint32_t hash = 2166136261U;
+          for (int i = 0; i < 6; i++) {
+              hash ^= mac[i];
+              hash *= 16777619U;
+          }
+          if ((hash & 0xFFFF0000U) == 0U) {
+              hash ^= 0xA53C0000U;
+          }
+          snprintf(s_device_code, sizeof(s_device_code), "GATE-%08lX", (unsigned long)hash);
+          if (strlen(s_device_name) == 0 || strcmp(s_device_name, "Gate Utama") == 0 ||
+              strncmp(s_device_name, "Gate 0000", 9) == 0) {
+              snprintf(s_device_name, sizeof(s_device_name), "Gate %08lX", (unsigned long)hash);
           }
       }
   }
@@ -396,21 +426,31 @@ void wifi_init_sta(void) {
 /* ========================================================================== */
 
 static void stm32_gpio_init(void) {
-    /* Konfigurasi pin kontrol bootloader STM32: IO21 (BOOT0) dan IO22 (NRST) */
+    /* Konfigurasi pin kontrol bootloader STM32: IO21 (BOOT0) dan IO22 (NRST).
+       PENTING: NRST wajib Open-Drain (OUTPUT_OD) dengan level 1 (Hi-Z) saat normal
+       agar tidak bentrok/short dengan internal reset STM32 (NVIC_SystemReset / IWDG)! */
     gpio_reset_pin(STM32_BOOT0_GPIO);
     gpio_reset_pin(STM32_NRST_GPIO);
 
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << STM32_NRST_GPIO) | (1ULL << STM32_BOOT0_GPIO),
+    gpio_config_t boot_conf = {
+        .pin_bit_mask = (1ULL << STM32_BOOT0_GPIO),
         .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&boot_conf);
+    gpio_set_level(STM32_BOOT0_GPIO, 0); /* Normal: BOOT0 = 0 (Flash Normal) */
+
+    gpio_config_t nrst_conf = {
+        .pin_bit_mask = (1ULL << STM32_NRST_GPIO),
+        .mode = GPIO_MODE_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&io_conf);
-    /* Kondisi normal: BOOT0 = 0 (Flash Normal), NRST = 1 (Running) */
-    gpio_set_level(STM32_BOOT0_GPIO, 0);
-    gpio_set_level(STM32_NRST_GPIO, 1);
+    gpio_config(&nrst_conf);
+    gpio_set_level(STM32_NRST_GPIO, 1); /* Normal: NRST released (Hi-Z) */
 }
 
 typedef enum {
@@ -480,7 +520,8 @@ static void stm32_bootloader_exit(void) {
     gpio_set_level(STM32_BOOT0_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    /* Pulse NRST */
+    /* Pulse NRST lalu kembalikan ke Open-Drain Hi-Z agar NVIC_SystemReset/IWDG STM32 tidak terhalang */
+    gpio_set_direction(STM32_NRST_GPIO, GPIO_MODE_OUTPUT_OD);
     gpio_set_level(STM32_NRST_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(80));
     gpio_set_level(STM32_NRST_GPIO, 1);
@@ -1829,6 +1870,10 @@ static void wifi_switch_to_ap(void) {
     if (s_is_ap_mode) return;
 
     ESP_LOGI(TAG, "Switching to SoftAP mode for OTA Web Server...");
+    if (s_wifi_event_group) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    s_wifi_connected_prev = false;
     esp_wifi_stop();
 
     if (!s_ap_netif) {
@@ -2537,6 +2582,10 @@ static void uart_task(void *pvParameters) {
 
   esp_task_wdt_add(NULL);
 
+  /* Beri tahu STM32 bahwa ESP32 sudah selesai booting / soft reset dan siap menerima perintah */
+  vTaskDelay(pdMS_TO_TICKS(150));
+  uart_send_and_log("ESP_READY\n");
+
   while (1) {
     esp_task_wdt_reset();
 
@@ -2682,6 +2731,19 @@ static void uart_task(void *pvParameters) {
               wifi_switch_to_ap();
             } else if (strncmp(rfid_str, "CMD:START_STA", 13) == 0) {
               wifi_switch_to_sta();
+            } else if (strncmp(rfid_str, "CMD:SOFT_RESET", 14) == 0 ||
+                       strncmp(rfid_str, "CMD:REBOOT", 10) == 0) {
+              ESP_LOGW(TAG, "Soft reset requested by STM32 via UART. Restarting ESP32...");
+              uart_send_and_log("ESP_REBOOTING\n");
+              vTaskDelay(pdMS_TO_TICKS(150));
+              esp_restart();
+            } else if (strncmp(rfid_str, "CMD:RESET_STM32", 15) == 0) {
+              ESP_LOGW(TAG, "STM32 hardware reset requested via UART (NRST pulse)...");
+              gpio_set_level(STM32_BOOT0_GPIO, 0);
+              gpio_set_direction(STM32_NRST_GPIO, GPIO_MODE_OUTPUT_OD);
+              gpio_set_level(STM32_NRST_GPIO, 0);
+              vTaskDelay(pdMS_TO_TICKS(100));
+              gpio_set_level(STM32_NRST_GPIO, 1); /* Release NRST (Hi-Z) */
             } else if (strncmp(rfid_str, "WIFI:", 5) == 0) {
               char *data = rfid_str + 5;
               /* Bersihkan karakter newline dan carriage return */
